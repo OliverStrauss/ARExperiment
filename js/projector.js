@@ -10,7 +10,7 @@ const hudStatus = document.getElementById('hudStatus');
 // Runtime toggles owned by the projector (so its keyboard shortcuts work too);
 // reported to the control window in every heartbeat.
 const PREFS_KEY = 'sticky-wall.projector.v1';
-const PREF_DEFAULTS = { running: true, gravity: false, outlines: false };
+const PREF_DEFAULTS = { running: true, gravity: false, outlines: false, mode: 'drop' };
 function loadPrefs() {
   try {
     return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') };
@@ -38,8 +38,8 @@ const state = {
 };
 
 const physics = new PhysicsWorld(state.w, state.h);
-physics.setConfig({ gravity: prefs.gravity });
-physics.addBall();
+physics.setConfig({ gravity: prefs.gravity, mode: prefs.mode });
+physics.resetBalls();
 
 const channel = createChannel('projector', onMessage);
 
@@ -69,6 +69,9 @@ function onMessage(msg) {
     case 'cmd':
       runCommand(msg.cmd);
       break;
+    case 'steer':
+      physics.steer(msg.dir);
+      break;
     default:
       break;
   }
@@ -87,6 +90,20 @@ function runCommand(cmd) {
       physics.setConfig({ gravity: prefs.gravity });
       break;
     case 'toggleOutlines': prefs.outlines = !prefs.outlines; break;
+    // Space: drop the waiting ball (or bring a new one up) in drop mode,
+    // start/pause in bounce mode.
+    case 'action':
+      if (prefs.mode === 'drop') {
+        prefs.running = true;
+        if (!physics.drop()) physics.spawnHeld();
+      } else {
+        prefs.running = !prefs.running;
+      }
+      break;
+    case 'toggleMode':
+      prefs.mode = prefs.mode === 'drop' ? 'bounce' : 'drop';
+      physics.setConfig({ mode: prefs.mode });
+      break;
     default: return;
   }
   savePrefs();
@@ -105,6 +122,7 @@ function sendBalls() {
     running: prefs.running,
     gravity: prefs.gravity,
     outlines: prefs.outlines,
+    mode: prefs.mode,
   });
 }
 setInterval(sendBalls, 100);
@@ -148,16 +166,37 @@ function updateHud() {
 }
 setInterval(updateHud, 1000);
 
+// Arrow keys steer the waiting ball (drop mode) while held down.
+const arrows = { left: false, right: false };
+function updateSteer() {
+  physics.steer((arrows.right ? 1 : 0) - (arrows.left ? 1 : 0));
+}
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
-  if (k === 'f') toggleFullscreen();
-  else if (k === ' ') runCommand('toggleRun');
+  if (k === 'arrowleft') arrows.left = true;
+  else if (k === 'arrowright') arrows.right = true;
+  else if (e.repeat) return;
+  else if (k === 'f') toggleFullscreen();
+  else if (k === ' ') runCommand('action');
   else if (k === 'o') runCommand('toggleOutlines');
   else if (k === 'g') runCommand('toggleGravity');
   else if (k === 'b') runCommand('addBall');
   else if (k === 'r') runCommand('resetBall');
+  else if (k === 'm') runCommand('toggleMode');
   else return;
+  updateSteer();
   e.preventDefault();
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowleft') arrows.left = false;
+  else if (k === 'arrowright') arrows.right = false;
+  else return;
+  updateSteer();
+});
+window.addEventListener('blur', () => {
+  arrows.left = arrows.right = false;
+  updateSteer();
 });
 
 // ---------------------------------------------------------------- render loop

@@ -1,5 +1,9 @@
 // matter.js world for the projector: screen-edge walls, static note bodies and
-// bouncing balls. Works in projector CSS pixels internally; notes come in and
+// balls. Two modes:
+//   drop   - a ball waits at the top, is steered left/right, then dropped and
+//            falls under gravity, bouncing off notes until it settles.
+//   bounce - balls fly around at a constant speed with no gravity.
+// Works in projector CSS pixels internally; notes come in and
 // balls go out in projector-normalized coordinates.
 //
 // matter.js velocities are "pixels per 1000/60 ms"; multiply by 60 for px/s.
@@ -17,6 +21,17 @@ const BALL_OPTS = {
   slop: 0.01,
   label: 'ball',
 };
+// Drop mode: a livelier-than-real ball that still comes to rest.
+const DROP_OPTS = {
+  restitution: 0.6,
+  friction: 0.02,
+  frictionAir: 0.004,
+  frictionStatic: 0.05,
+  inertia: Infinity,
+  slop: 0.01,
+  label: 'ball',
+};
+const STEER_SPEED = 0.5; // screen widths per second while an arrow key is held
 const STATIC_OPTS = { isStatic: true, restitution: 1, friction: 0, frictionStatic: 0 };
 
 export class PhysicsWorld {
@@ -30,7 +45,8 @@ export class PhysicsWorld {
     this.walls = [];
     this.balls = [];
     this.notes = new Map(); // id -> { key, corners (normalized), body }
-    this.config = { gravity: false, ballRadius: 0.025, ballSpeed: 0.45 };
+    this.config = { mode: 'bounce', gravity: false, ballRadius: 0.012, ballSpeed: 0.45 };
+    this.steerDir = 0; // -1 left, 0, +1 right (drop mode)
     this._buildWalls();
   }
 
@@ -68,12 +84,16 @@ export class PhysicsWorld {
     const notes = [...this.notes.entries()].map(([id, n]) => ({ id, corners: n.corners }));
     this.setNotes([]);
     this.setNotes(notes);
-    const states = this.balls.map((b) => ({
+    this._replaceBalls(this._ballStates(sx, sy));
+  }
+
+  _ballStates(sx = 1, sy = 1) {
+    return this.balls.map((b) => ({
       x: b.position.x * sx,
       y: b.position.y * sy,
       v: Body.getVelocity(b),
+      held: !!b.plugin.held,
     }));
-    this._replaceBalls(states);
   }
 
   // ---------------------------------------------------------------- notes
@@ -101,7 +121,7 @@ export class PhysicsWorld {
       this.notes.delete(id);
     }
     // A note that appears (or moves) on top of a ball pushes the ball out.
-    if (touched.length) this.balls.forEach((b) => this._evict(b, touched));
+    if (touched.length) this.balls.forEach((b) => !b.plugin.held && this._evict(b, touched));
   }
 
   _noteBody(corners) {
@@ -166,14 +186,66 @@ export class PhysicsWorld {
     return { x: Math.cos(a) * s, y: Math.sin(a) * s };
   }
 
-  addBall(pos) {
-    const r = this.radiusPx();
-    const p = pos || this._freeSpot();
-    const ball = Bodies.circle(p.x, p.y, r, BALL_OPTS);
-    Body.setVelocity(ball, this._randomVelocity());
+  _makeBall(x, y) {
+    const opts = this.config.mode === 'drop' ? DROP_OPTS : BALL_OPTS;
+    const ball = Bodies.circle(x, y, this.radiusPx(), { ...opts, plugin: {} });
     this.balls.push(ball);
     Composite.add(this.world, ball);
     return ball;
+  }
+
+  // Bounce mode: a flying ball at a free spot. Drop mode: a new held ball.
+  addBall(pos) {
+    if (this.config.mode === 'drop') return this.spawnHeld();
+    const p = pos || this._freeSpot();
+    const ball = this._makeBall(p.x, p.y);
+    Body.setVelocity(ball, this._randomVelocity());
+    return ball;
+  }
+
+  // ---- drop mode
+
+  heldY() {
+    return this.radiusPx() * 1.5 + 2;
+  }
+
+  // A ball parked at the top. It is a sensor (no collisions) until dropped.
+  spawnHeld(x) {
+    const held = this.balls.find((b) => b.plugin.held);
+    if (held) return held;
+    const ball = this._makeBall(x ?? this.lastHeldX ?? this.w / 2, this.heldY());
+    ball.isSensor = true;
+    ball.plugin.held = true;
+    return ball;
+  }
+
+  steer(dir) {
+    this.steerDir = Math.sign(dir) || 0;
+  }
+
+  // Release the held ball. Returns true if something was dropped.
+  drop() {
+    const held = this.balls.filter((b) => b.plugin.held);
+    for (const b of held) {
+      b.plugin.held = false;
+      b.isSensor = false;
+      Body.setVelocity(b, { x: 0, y: 0 });
+      const notes = [...this.notes.values()].map((n) => n.body).filter(Boolean);
+      this._evict(b, notes);
+    }
+    return held.length > 0;
+  }
+
+  _updateHeld(dtMs) {
+    const r = this.radiusPx();
+    for (const b of this.balls) {
+      if (!b.plugin.held) continue;
+      let x = b.position.x + (this.steerDir * STEER_SPEED * this.w * dtMs) / 1000;
+      x = Math.min(Math.max(x, r), this.w - r);
+      this.lastHeldX = x;
+      Body.setPosition(b, { x, y: this.heldY() });
+      Body.setVelocity(b, { x: 0, y: 0 });
+    }
   }
 
   clearBalls() {
@@ -183,32 +255,31 @@ export class PhysicsWorld {
 
   resetBalls() {
     this.clearBalls();
-    this.addBall();
+    if (this.config.mode === 'drop') this.spawnHeld();
+    else this.addBall();
   }
 
   _replaceBalls(states) {
     this.clearBalls();
     for (const s of states) {
       const r = this.radiusPx();
-      const ball = Bodies.circle(
-        Math.min(Math.max(s.x, r), this.w - r),
-        Math.min(Math.max(s.y, r), this.h - r),
-        r,
-        BALL_OPTS,
-      );
+      const ball = this._makeBall(Math.min(Math.max(s.x, r), this.w - r), Math.min(Math.max(s.y, r), this.h - r));
       Body.setVelocity(ball, s.v);
-      this.balls.push(ball);
-      Composite.add(this.world, ball);
+      if (s.held) {
+        ball.isSensor = true;
+        ball.plugin.held = true;
+      }
     }
   }
 
   setConfig(cfg) {
     const radiusChanged = cfg.ballRadius !== undefined && cfg.ballRadius !== this.config.ballRadius;
+    const modeChanged = cfg.mode !== undefined && cfg.mode !== this.config.mode;
     Object.assign(this.config, cfg);
-    this.engine.gravity.y = this.config.gravity ? 1 : 0;
-    if (radiusChanged) {
-      this._replaceBalls(this.balls.map((b) => ({ x: b.position.x, y: b.position.y, v: Body.getVelocity(b) })));
-    }
+    // Drop mode always has gravity; in bounce mode it's the Gravity toggle.
+    this.engine.gravity.y = this.config.mode === 'drop' || this.config.gravity ? 1 : 0;
+    if (modeChanged) this.resetBalls();
+    else if (radiusChanged) this._replaceBalls(this._ballStates());
   }
 
   // ---------------------------------------------------------------- simulation
@@ -217,7 +288,9 @@ export class PhysicsWorld {
     const dt = Math.min(dtMs, 50); // after a stall, don't jump
     const n = Math.max(1, Math.ceil(dt / SUBSTEP_MS));
     for (let i = 0; i < n; i++) {
+      this._updateHeld(dt / n);
       Engine.update(this.engine, dt / n);
+      this._updateHeld(0);
       this._regulateSpeed();
     }
     this._rescueEscapees();
@@ -228,9 +301,10 @@ export class PhysicsWorld {
   _regulateSpeed() {
     const target = this.speedUnits();
     for (const b of this.balls) {
+      if (b.plugin.held) continue;
       let v = Body.getVelocity(b);
       let mag = Math.hypot(v.x, v.y);
-      if (this.config.gravity) {
+      if (this.config.gravity || this.config.mode === 'drop') {
         const cap = target * 2.5;
         if (mag > cap) Body.setVelocity(b, { x: (v.x / mag) * cap, y: (v.y / mag) * cap });
         continue;
@@ -256,7 +330,7 @@ export class PhysicsWorld {
       const { x, y } = b.position;
       if (x < -5 || y < -5 || x > this.w + 5 || y > this.h + 5 || !Number.isFinite(x + y)) {
         Body.setPosition(b, this._freeSpot());
-        Body.setVelocity(b, this._randomVelocity());
+        Body.setVelocity(b, this.config.mode === 'drop' ? { x: 0, y: 0 } : this._randomVelocity());
       }
     }
   }
@@ -275,6 +349,7 @@ export class PhysicsWorld {
         ry: r / this.h,
         vx: (v.x * 60) / this.w,
         vy: (v.y * 60) / this.h,
+        held: !!b.plugin.held,
       };
     });
   }

@@ -135,6 +135,10 @@ try {
   check(projNotes === det.gt, `projector built ${projNotes} static note bodies`);
 
   console.log('physics + ball mask');
+  // Bounce mode for this part: balls fly everywhere, which stresses the mask.
+  await ctl.click('#modeBtn');
+  await sleep(400);
+  check((await ctl.textContent('#modeBtn')) === 'Mode: Bounce', 'mode button switches to bounce');
   // Stress the ball mask: big balls whose projected light looks saturated.
   await ctl.check('#simTint');
   await ctl.evaluate(() => {
@@ -206,6 +210,31 @@ try {
   await ctl.click('#resetBall');
   await sleep(400);
   check((await proj.evaluate(() => window.stickyWall.physics.balls.length)) === 1, 'Reset ball leaves one ball');
+
+  console.log('drop mode (keyboard in the control window)');
+  await ctl.click('#modeBtn');
+  await sleep(400);
+  const ball = () => proj.evaluate(() => window.stickyWall.physics.ballsNormalized()[0]);
+  const b0 = await ball();
+  check(b0.held && b0.y < 0.1, 'a ball waits at the top of the screen');
+  await ctl.keyboard.down('ArrowRight');
+  await sleep(500);
+  await ctl.keyboard.up('ArrowRight');
+  const b1 = await ball();
+  check(b1.x > b0.x + 0.1 && b1.held, `→ moves it right (${b0.x.toFixed(2)} → ${b1.x.toFixed(2)})`);
+  await ctl.keyboard.down('ArrowLeft');
+  await sleep(300);
+  await ctl.keyboard.up('ArrowLeft');
+  check((await ball()).x < b1.x, '← moves it left');
+  await ctl.keyboard.press(' ');
+  await sleep(1200);
+  const b2 = await ball();
+  check(!b2.held && b2.y > 0.3, `Space drops it (now at y=${b2.y.toFixed(2)})`);
+  await proj.screenshot({ path: path.join(OUT, '3-drop-projector.png') });
+  await ctl.keyboard.press('r');
+  await sleep(400);
+  const b3 = await ball();
+  check(b3.held && b3.y < 0.1, 'R puts a new ball back at the top');
 
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {

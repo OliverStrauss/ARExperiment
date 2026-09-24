@@ -18,6 +18,7 @@
     <button id="openProjector" title="Opens projector.html in a new window; drag it to the projector">Open projector window</button>
     <button id="calibrate" class="primary">Calibrate</button>
     <span style="width:12px"></span>
+    <button id="modeBtn" title="Drop: steer with ← →, Space drops, R resets. Bounce: balls fly around.">Mode: Drop</button>
     <button id="runBtn" title="Start / pause the physics">Pause</button>
     <button id="resetBall">Reset ball</button>
     <button id="addBall">Add ball</button>
@@ -34,6 +35,7 @@
           <canvas class="feed" id="feed" width="1280" height="720"></canvas>
           <canvas class="magnifier" id="magnifier" width="140" height="140"></canvas>
         </div>
+        <div class="status" style="margin:6px 0">Keys (this window or the projector): ← → move the ball · Space drop · R reset · M switch drop/bounce</div>
         <div class="row">
           <label><input type="checkbox" id="crossTest"> Crosshair test (move the mouse over the feed; a crosshair should appear at the same spot on the wall)</label>
           <button id="forgetCalib">Forget calibration</button>

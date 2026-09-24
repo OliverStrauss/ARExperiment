@@ -30,6 +30,7 @@ const els = {
   runBtn: $('runBtn'),
   gravityBtn: $('gravityBtn'),
   outlinesBtn: $('outlinesBtn'),
+  modeBtn: $('modeBtn'),
 };
 const feedCtx = els.feed.getContext('2d');
 
@@ -59,6 +60,7 @@ const state = {
     balls: [], // [{x,y,rx,ry,vx,vy,t}] from the projector heartbeat
     running: true,
     gravity: false,
+    mode: 'drop',
   },
 };
 
@@ -85,6 +87,7 @@ function onMessage(msg) {
     state.proj.running = msg.running;
     state.proj.gravity = msg.gravity;
     state.proj.outlines = msg.outlines;
+    state.proj.mode = msg.mode;
     updateGameButtons();
   }
 }
@@ -97,6 +100,8 @@ function updateGameButtons() {
   els.runBtn.textContent = state.proj.running ? 'Pause' : 'Start';
   els.gravityBtn.classList.toggle('active', state.proj.gravity);
   els.outlinesBtn.classList.toggle('active', state.proj.outlines);
+  els.modeBtn.textContent = `Mode: ${state.proj.mode === 'bounce' ? 'Bounce' : 'Drop'}`;
+  els.gravityBtn.disabled = state.proj.mode === 'drop'; // drop mode always has gravity
 }
 
 const cmd = (name) => () => channel.send('cmd', { cmd: name });
@@ -105,6 +110,45 @@ $('resetBall').addEventListener('click', cmd('resetBall'));
 $('addBall').addEventListener('click', cmd('addBall'));
 els.gravityBtn.addEventListener('click', cmd('toggleGravity'));
 els.outlinesBtn.addEventListener('click', cmd('toggleOutlines'));
+els.modeBtn.addEventListener('click', cmd('toggleMode'));
+
+// Game keys work from this window too (so you don't need to focus the
+// projector): arrows steer the waiting ball, Space drops it, R resets.
+const arrows = { left: false, right: false };
+function sendSteer() {
+  channel.send('steer', { dir: (arrows.right ? 1 : 0) - (arrows.left ? 1 : 0) });
+}
+function isTyping(el) {
+  return el?.tagName === 'SELECT' || el?.tagName === 'TEXTAREA' || (el?.tagName === 'INPUT' && el.type === 'text');
+}
+window.addEventListener('keydown', (e) => {
+  if (isTyping(e.target) || e.metaKey || e.ctrlKey) return;
+  const k = e.key.toLowerCase();
+  if (k === 'arrowleft') arrows.left = true;
+  else if (k === 'arrowright') arrows.right = true;
+  else if (k === ' ') { if (!e.repeat) channel.send('cmd', { cmd: 'action' }); }
+  else if (k === 'r') { if (!e.repeat) channel.send('cmd', { cmd: 'resetBall' }); }
+  else if (k === 'm') { if (!e.repeat) channel.send('cmd', { cmd: 'toggleMode' }); }
+  else return;
+  if (k.startsWith('arrow')) sendSteer();
+  e.preventDefault(); // no page scrolling / slider nudging / button presses
+});
+window.addEventListener('keyup', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowleft') arrows.left = false;
+  else if (k === 'arrowright') arrows.right = false;
+  else if (k === ' ') { e.preventDefault(); return; }
+  else return;
+  sendSteer();
+});
+window.addEventListener('blur', () => {
+  arrows.left = arrows.right = false;
+  sendSteer();
+});
+// Clicked buttons/checkboxes keep focus, and Space would press them again.
+document.addEventListener('click', (e) => {
+  if (e.target.matches?.('button, input[type=checkbox]')) e.target.blur();
+});
 
 // Push everything the projector should be showing (after it (re)connects).
 function syncProjector() {
