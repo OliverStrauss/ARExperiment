@@ -9,13 +9,15 @@
 //   calib   { on: bool }                 show border + numbered corner dots
 //   cross   { pt: [x,y] | null }         calibration test crosshair
 //   cmd     { cmd: 'start'|'pause'|'toggleRun'|'resetBall'|'addBall'|'clearBalls'
-//                  |'toggleGravity'|'toggleOutlines' }
+//                  |'toggleGravity'|'toggleOutlines'|'toggleMode'
+//                  |'action' }       action = Space: drop (drop mode) / pause (bounce)
+//   steer   { dir: -1|0|1 }              move the waiting ball (drop mode)
 //   config  { ballRadius, ballSpeed }    radius: fraction of min(w,h); speed: widths/s
 //   ping    {}                           asks the projector to say hello
 //
 // projector -> control
 //   hello   { w, h }                     projector window size in CSS px
-//   balls   { balls: [{x,y,rx,ry,vx,vy}], t, running, gravity, outlines }
+//   balls   { balls: [{x,y,rx,ry,vx,vy,held}], t, running, gravity, outlines, mode }
 //           ~10 Hz; rx/ry = radius / width|height, vx/vy per second
 
 export const CHANNEL_NAME = 'sticky-wall';

@@ -20,7 +20,9 @@ python3 -m http.server 8000  # python3 ships with macOS
    press **Fullscreen** (or `F`).
 3. Pick your USB webcam in the **Camera** dropdown.
 4. **Calibrate**: click the 4 numbered dots in the camera view, then **Done**.
-5. Stick notes on the wall. Balls bounce off them.
+5. Stick notes on the wall. A ball waits at the top of the projection: move
+   it with **← →**, press **Space** to drop it and watch it bounce off the
+   notes, press **R** to bring it back to the top.
 
 `getUserMedia` needs `localhost` (or https); opening the files with `file://`
 will not work. Both windows must come from the same address so they can talk.
@@ -82,18 +84,27 @@ projectors and rooms differ. Go through it stage by stage.
 
 ## Controls
 
+**Game keys** work in either window: **← →** move the waiting ball,
+**Space** drops it (press again for a new ball), **R** resets, **M** switches
+between the two modes:
+
+- **Drop** (default): the ball waits at the top, you aim and drop it, it falls
+  under gravity and bounces off the notes until it settles.
+- **Bounce**: balls fly around at constant speed without gravity (Space then
+  starts/pauses).
+
 | control.html | |
 |---|---|
+| Mode | Switch Drop / Bounce |
 | Calibrate / Done | Enter/leave calibration mode |
 | Pause / Start, Reset ball, Add ball | Game controls |
-| Gravity | Toggle gravity (balls fall, bounce forever) |
+| Gravity | Bounce mode only: toggle gravity (drop mode always has it) |
 | Outlines | Faint note outlines on the projector (debug) |
 | Crosshair test | Mouse over the feed → crosshair on the wall |
 | Freeze notes | Stop updating notes (e.g. people walking in front) |
 | Only detect inside the projected area | Ignore notes outside the calibrated area |
 
-Projector keyboard: `F` fullscreen · `Space` start/pause · `B` add ball ·
-`R` reset · `G` gravity · `O` outlines.
+Projector-only keys: `F` fullscreen · `B` add ball · `G` gravity · `O` outlines.
 
 ## Settings (saved in localStorage)
 
@@ -187,5 +198,7 @@ removes notes, and presses the game buttons. Screenshots are saved in
 | Notes flicker in/out | Raise *Frames to remove*, lower *Sat min*, raise *Morph kernel*. |
 | Wall texture or shadows detected | Raise *Sat min*/*Min area*, keep *Only detect inside the projected area* on. |
 | Crosshair is offset | Recalibrate; make sure clicks went 1→2→3→4 clockwise from top-left. |
-| Detection is slow (> 100 ms) | Lower *Process width* to 480 or 320. |
+| Detection is slow (> 100 ms) | Lower *Process width* to 640 or 480. |
+| Notes far away aren't picked up (tiny white dots in the mask) | Lower *Min area* (0.01), raise *Process width* (1280), lower *Morph kernel* (3). Also check *Freeze notes* is off. |
+| Beige/wood wall shows up in the mask | Narrow *Hue min/max* to your note colour, e.g. green notes 35-85, yellow 20-35, pink 150-175. |
 | Ball tunnels through tiny notes | Lower *Ball speed* or raise *Min area* to ignore tiny notes. |

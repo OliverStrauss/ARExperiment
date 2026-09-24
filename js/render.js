@@ -16,7 +16,7 @@ export const CALIB_DOTS = [
  * @param scene.cross     [x,y] test crosshair or null
  * @param scene.notes     [{ corners: [[x,y] x4] }]
  * @param scene.outlines  draw faint note outlines
- * @param scene.balls     [{ x, y, rx }]  rx = radius / width
+ * @param scene.balls     [{ x, y, rx, held }]  rx = radius / width
  */
 export function drawScene(ctx, w, h, scene) {
   ctx.save();
@@ -79,6 +79,18 @@ export function drawScene(ctx, w, h, scene) {
   }
 
   if (scene.balls) {
+    // aiming guide under a ball that is waiting to be dropped
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = Math.max(1, m * 0.002);
+    ctx.setLineDash([m * 0.01, m * 0.015]);
+    for (const b of scene.balls) {
+      if (!b.held) continue;
+      ctx.beginPath();
+      ctx.moveTo(b.x * w, b.y * h + b.rx * w * 2);
+      ctx.lineTo(b.x * w, h);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
     ctx.fillStyle = '#fff';
     for (const b of scene.balls) {
       ctx.beginPath();

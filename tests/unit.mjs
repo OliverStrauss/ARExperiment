@@ -254,6 +254,46 @@ test('physics: resize keeps balls and notes', async () => {
   assert.equal(pw.notes.size, 1);
 });
 
+test('physics: drop mode - ball waits at the top, steers, drops, resets', async () => {
+  const pw = await physicsWorld(1600, 900);
+  pw.setConfig({ mode: 'drop' });
+  assert.equal(pw.balls.length, 1);
+  let [b] = pw.ballsNormalized();
+  assert.equal(b.held, true);
+  const y0 = b.y;
+  for (let i = 0; i < 60; i++) pw.step(1000 / 60); // 1 s: gravity must not pull it down
+  [b] = pw.ballsNormalized();
+  close(b.y, y0, 1e-9, 'held ball stays put');
+  pw.steer(1);
+  for (let i = 0; i < 30; i++) pw.step(1000 / 60);
+  pw.steer(0);
+  const [moved] = pw.ballsNormalized();
+  assert.ok(moved.x > b.x + 0.2, `steered right (${b.x.toFixed(2)} -> ${moved.x.toFixed(2)})`);
+  assert.equal(pw.drop(), true);
+  for (let i = 0; i < 60; i++) pw.step(1000 / 60);
+  const [fallen] = pw.ballsNormalized();
+  assert.equal(fallen.held, false);
+  assert.ok(fallen.y > 0.5, 'ball fell');
+  pw.resetBalls();
+  assert.equal(pw.balls.length, 1);
+  assert.equal(pw.ballsNormalized()[0].held, true);
+});
+
+test('physics: dropped ball lands on a note instead of falling through', async () => {
+  const pw = await physicsWorld(1600, 900);
+  pw.setConfig({ mode: 'drop' });
+  pw.setNotes([{ id: 1, corners: [[0.4, 0.6], [0.6, 0.6], [0.6, 0.62], [0.4, 0.62]] }]); // a shelf
+  pw.drop(); // held ball starts at x = 0.5
+  let minVy = Infinity;
+  for (let i = 0; i < 240; i++) {
+    pw.step(1000 / 60);
+    minVy = Math.min(minVy, pw.ballsNormalized()[0].vy);
+  }
+  const [b] = pw.ballsNormalized();
+  assert.ok(b.y < 0.6, `ball rests on the shelf (y=${b.y.toFixed(3)})`);
+  assert.ok(minVy < 0, 'ball bounced up at least once');
+});
+
 // ------------------------------------------------------------------ runner
 
 let cvPromise = null;
