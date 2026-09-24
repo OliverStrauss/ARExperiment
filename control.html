@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sticky-wall · control</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script async src="vendor/opencv.js"></script>
+</head>
+<body>
+  <div class="topbar">
+    <h1>sticky-wall</h1>
+    <label>Camera
+      <select id="cameraSelect"><option value="">Loading…</option></select>
+    </label>
+    <button id="refreshCams" title="Re-scan cameras">↻</button>
+    <span class="spacer"></span>
+  </div>
+
+  <div class="layout">
+    <div>
+      <div class="banner" id="banner" hidden></div>
+      <div class="card">
+        <h2>Camera</h2>
+        <div class="feed-wrap" id="feedWrap">
+          <canvas class="feed" id="feed" width="1280" height="720"></canvas>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>Status</h2>
+        <div class="status" id="status">Starting…</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Threshold mask</h2>
+        <canvas class="mask" id="mask" width="640" height="360"></canvas>
+      </div>
+      <div class="card sliders" style="margin-top:14px">
+        <h2>Settings <button id="resetSettings" style="float:right;padding:2px 8px">Defaults</button></h2>
+        <div id="sliders"></div>
+      </div>
+    </div>
+  </div>
+
+  <video id="video" playsinline muted hidden></video>
+  <script type="module" src="js/control.js"></script>
+</body>
+</html>
