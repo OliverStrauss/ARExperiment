@@ -26,6 +26,16 @@
           <canvas class="feed" id="feed" width="1280" height="720"></canvas>
         </div>
       </div>
+      <div class="card" id="simPanel" style="margin-top:14px" hidden>
+        <h2>Simulated wall</h2>
+        <div class="row">
+          <button id="simAdd">Add note</button>
+          <button id="simRemove">Remove note</button>
+          <button id="simShuffle">Shuffle notes</button>
+          <label><input type="checkbox" id="simNoise" checked> Sensor noise</label>
+        </div>
+        <div class="status">Drag notes in the camera view to move them. The projector picture is mirrored onto the fake wall.</div>
+      </div>
       <div class="card" style="margin-top:14px">
         <h2>Status</h2>
         <div class="status" id="status">Starting…</div>

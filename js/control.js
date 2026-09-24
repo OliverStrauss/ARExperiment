@@ -1,5 +1,6 @@
 import { SLIDERS, DEFAULTS, loadSettings, saveSettings } from './settings.js';
-import { listCameras, openCamera, stopStream } from './camera.js';
+import { listCameras, openCamera, stopStream, SIM_DEVICE_ID } from './camera.js';
+import { SimCamera } from './simcam.js';
 import { cvReady } from './cvload.js';
 import { Detector } from './vision.js';
 
@@ -14,6 +15,7 @@ const els = {
   banner: $('banner'),
   sliders: $('sliders'),
   resetSettings: $('resetSettings'),
+  simPanel: $('simPanel'),
 };
 const feedCtx = els.feed.getContext('2d');
 
@@ -25,7 +27,15 @@ const state = {
   lastDetect: null, // { ms, procSize, notes }
   detectTimer: null,
   fps: 0,
+  sim: null, // SimCamera when the simulated camera is selected
+  // Mirror of what the projector is showing (drives the simulated camera).
+  proj: { w: 1920, h: 1080, calib: false, cross: null, notes: [], outlines: false, balls: [] },
 };
+
+function projectorScene() {
+  const p = state.proj;
+  return { ...p, aspect: p.w / p.h };
+}
 
 // ---------------------------------------------------------------- UI helpers
 
@@ -82,16 +92,11 @@ async function refreshCameraList() {
     showBanner(`Camera access failed: ${err.message}. On a Mac check System Settings → Privacy & Security → Camera for your browser.`);
   }
   sel.innerHTML = '';
+  cams.push({ deviceId: SIM_DEVICE_ID, label: 'Simulated wall (test, no hardware)' });
   for (const c of cams) {
     const o = document.createElement('option');
     o.value = c.deviceId;
     o.textContent = c.label;
-    sel.appendChild(o);
-  }
-  if (!sel.options.length) {
-    const o = document.createElement('option');
-    o.value = '';
-    o.textContent = 'No cameras found';
     sel.appendChild(o);
   }
   const wanted = state.settings.deviceId;
@@ -102,10 +107,19 @@ async function refreshCameraList() {
 async function selectCamera(deviceId) {
   stopStream(state.stream);
   state.stream = null;
+  state.sim?.stop();
+  state.sim = null;
   els.video.srcObject = null;
+  els.simPanel.hidden = deviceId !== SIM_DEVICE_ID;
   if (!deviceId) return;
   try {
-    state.stream = await openCamera(deviceId);
+    if (deviceId === SIM_DEVICE_ID) {
+      const cv = await cvReady();
+      state.sim = new SimCamera(cv, projectorScene);
+      state.stream = state.sim.stream;
+    } else {
+      state.stream = await openCamera(deviceId);
+    }
     els.video.srcObject = state.stream;
     await els.video.play();
     state.settings.deviceId = deviceId;
@@ -119,6 +133,30 @@ async function selectCamera(deviceId) {
 els.cameraSelect.addEventListener('change', () => selectCamera(els.cameraSelect.value));
 els.refreshCams.addEventListener('click', async () => selectCamera(await refreshCameraList()));
 navigator.mediaDevices?.addEventListener?.('devicechange', () => refreshCameraList());
+
+// ---------------------------------------------------------------- simulated wall panel
+
+$('simAdd').addEventListener('click', () => state.sim?.addNote());
+$('simRemove').addEventListener('click', () => state.sim?.removeNote());
+$('simShuffle').addEventListener('click', () => state.sim?.shuffle());
+$('simNoise').addEventListener('change', (e) => { if (state.sim) state.sim.noise = e.target.checked; });
+
+// Mouse position over the feed canvas, in camera (video) pixels.
+function feedPoint(ev) {
+  const r = els.feed.getBoundingClientRect();
+  return [((ev.clientX - r.left) / r.width) * els.feed.width, ((ev.clientY - r.top) / r.height) * els.feed.height];
+}
+
+let simDrag = -1;
+els.feed.addEventListener('pointerdown', (ev) => {
+  if (!state.sim || ev.button !== 0) return;
+  simDrag = state.sim.noteIndexAtCam(feedPoint(ev));
+  if (simDrag >= 0) els.feed.setPointerCapture(ev.pointerId);
+});
+els.feed.addEventListener('pointermove', (ev) => {
+  if (state.sim && simDrag >= 0) state.sim.moveNote(simDrag, feedPoint(ev));
+});
+els.feed.addEventListener('pointerup', () => { simDrag = -1; });
 
 function videoSize() {
   return [els.video.videoWidth || 0, els.video.videoHeight || 0];
