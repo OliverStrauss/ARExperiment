@@ -19,11 +19,18 @@ export const SLIDERS = [
   { key: 'maxArea', group: 'Note filter', label: 'Max area % of frame', min: 0.5, max: 30, step: 0.1, def: 8 },
   { key: 'minRect', group: 'Note filter', label: 'Min rectangularity', min: 0, max: 1, step: 0.05, def: 0.6 },
   { key: 'rate', group: 'Detection', label: 'Detection rate Hz', min: 0.5, max: 10, step: 0.5, def: 3 },
+  { key: 'seenN', group: 'Tracking (anti-flicker)', label: 'Frames to add', min: 1, max: 10, step: 1, def: 3 },
+  { key: 'missM', group: 'Tracking (anti-flicker)', label: 'Frames to remove', min: 1, max: 15, step: 1, def: 5 },
+  { key: 'smooth', group: 'Tracking (anti-flicker)', label: 'Smoothing', min: 0, max: 0.9, step: 0.05, def: 0.5 },
+  { key: 'matchDist', group: 'Tracking (anti-flicker)', label: 'Match distance', min: 0.01, max: 0.2, step: 0.01, def: 0.06 },
+  { key: 'ballPad', group: 'Ball mask', label: 'Radius multiplier', min: 1, max: 4, step: 0.1, def: 1.8 },
+  { key: 'ballLag', group: 'Ball mask', label: 'Camera lag s', min: 0, max: 0.6, step: 0.05, def: 0.25 },
 ];
 
 export const DEFAULTS = {
   ...Object.fromEntries(SLIDERS.map((s) => [s.key, s.def])),
   deviceId: '',
+  roiOnly: true, // only detect inside the calibrated projection area
 };
 
 export function loadSettings() {

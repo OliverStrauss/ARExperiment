@@ -63,9 +63,14 @@
       <div class="card">
         <h2>Threshold mask</h2>
         <canvas class="mask" id="mask" width="640" height="360"></canvas>
+        <div class="status" style="margin-top:6px">Feed overlay: <span style="color:#7be35b">green</span> = note in play (id), <span style="color:#ffd54f">yellow</span> = detected this frame, <span style="color:#ff6b6b">red</span> = rejected blob / ball mask.</div>
       </div>
       <div class="card sliders" style="margin-top:14px">
         <h2>Settings <button id="resetSettings" style="float:right;padding:2px 8px">Defaults</button></h2>
+        <div class="row" style="font-size:12px">
+          <label><input type="checkbox" id="roiOnly"> Only detect inside the projected area</label>
+          <label><input type="checkbox" id="freezeNotes"> Freeze notes</label>
+        </div>
         <div id="sliders"></div>
       </div>
     </div>

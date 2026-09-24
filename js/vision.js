@@ -105,7 +105,39 @@ export class Detector {
 
       if (opts.maskCanvas) cv.imshow(opts.maskCanvas, mask);
 
-      return { notes: [], ms: performance.now() - t0, procSize: [pw, ph] };
+      // --- Contours -> filtered minimum-area rectangles.
+      const contours = track(new cv.MatVector());
+      const hierarchy = track(new cv.Mat());
+      cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      const frameArea = pw * ph;
+      const minA = (params.minArea / 100) * frameArea;
+      const maxA = (params.maxArea / 100) * frameArea;
+      const notes = [];
+      const rejected = [];
+      for (let i = 0; i < contours.size(); i++) {
+        const c = contours.get(i);
+        try {
+          const area = cv.contourArea(c);
+          if (area < minA * 0.25) continue; // specks: not even worth showing
+          const rr = cv.minAreaRect(c);
+          const corners = cv.RotatedRect.points(rr).map((p) => [p.x / scale, p.y / scale]);
+          const rectArea = rr.size.width * rr.size.height;
+          const rectangularity = rectArea > 0 ? area / rectArea : 0;
+          let reason = null;
+          if (area < minA) reason = 'small';
+          else if (area > maxA) reason = 'large';
+          else if (rectangularity < params.minRect) reason = 'shape';
+          if (reason) {
+            if (rejected.length < 50) rejected.push({ corners, reason });
+          } else {
+            notes.push({ corners, area: area / (scale * scale), rectangularity });
+          }
+        } finally {
+          c.delete();
+        }
+      }
+
+      return { notes, rejected, ms: performance.now() - t0, procSize: [pw, ph] };
     } finally {
       mats.forEach((m) => m.delete());
     }

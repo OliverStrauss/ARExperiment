@@ -91,7 +91,7 @@ function frame() {
     calib: state.calib,
     cross: state.cross,
     notes: state.notes,
-    outlines: false,
+    outlines: true, // debug outlines; becomes a toggle with the physics stage
     balls: [],
   });
   requestAnimationFrame(frame);

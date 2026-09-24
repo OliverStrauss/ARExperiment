@@ -1,6 +1,7 @@
 import { SLIDERS, DEFAULTS, loadSettings, saveSettings, loadCalibration, saveCalibration } from './settings.js';
 import { createChannel } from './channel.js';
-import { computeCalibration, camToProj, projectionQuadInCamera, snapToDot, CALIB_DOTS } from './calibration.js';
+import { computeCalibration, camToProj, projToCam, projectionQuadInCamera, snapToDot } from './calibration.js';
+import { NoteTracker, centroid } from './tracker.js';
 import { listCameras, openCamera, stopStream, SIM_DEVICE_ID } from './camera.js';
 import { SimCamera } from './simcam.js';
 import { cvReady } from './cvload.js';
@@ -24,6 +25,8 @@ const els = {
   calibSnap: $('calibSnap'),
   crossTest: $('crossTest'),
   magnifier: $('magnifier'),
+  roiOnly: $('roiOnly'),
+  freezeNotes: $('freezeNotes'),
 };
 const feedCtx = els.feed.getContext('2d');
 
@@ -40,8 +43,10 @@ const state = {
   calibrating: false,
   calibPts: [], // camera px, in dot order
   projSeen: 0, // last time we heard from the projector (ms)
+  tracker: null, // NoteTracker (projector-normalized)
+  blockers: [], // ball mask capsules used in the last detection (camera px)
   // Mirror of what the projector is showing (drives the simulated camera).
-  proj: { w: 1920, h: 1080, calib: false, cross: null, notes: [], outlines: false, balls: [] },
+  proj: { w: 1920, h: 1080, calib: false, cross: null, notes: [], outlines: true, balls: [] },
 };
 
 function projectorScene() {
@@ -110,6 +115,7 @@ function buildSliders() {
       out.textContent = input.value;
       saveSettings(state.settings);
       if (s.key === 'rate') restartDetectionLoop();
+      state.tracker?.setOptions(trackerOptions());
     });
     groups.get(s.group).appendChild(row);
   }
@@ -119,8 +125,21 @@ els.resetSettings.addEventListener('click', () => {
   state.settings = { ...DEFAULTS, deviceId: state.settings.deviceId };
   saveSettings(state.settings);
   buildSliders();
+  els.roiOnly.checked = state.settings.roiOnly;
+  state.tracker?.setOptions(trackerOptions());
   restartDetectionLoop();
 });
+
+els.roiOnly.checked = state.settings.roiOnly;
+els.roiOnly.addEventListener('change', () => {
+  state.settings.roiOnly = els.roiOnly.checked;
+  saveSettings(state.settings);
+});
+
+function trackerOptions() {
+  const s = state.settings;
+  return { seenN: s.seenN, missM: s.missM, smooth: s.smooth, matchDist: s.matchDist };
+}
 
 // ---------------------------------------------------------------- camera
 
@@ -283,6 +302,8 @@ $('calibUndo').addEventListener('click', () => { state.calibPts.pop(); onCalibPo
 $('calibClear').addEventListener('click', () => { state.calibPts = []; onCalibPointsChanged(); });
 $('forgetCalib').addEventListener('click', () => {
   state.calib = null;
+  state.tracker?.reset();
+  publishNotes([]);
   saveCalibration(null);
   showBanner('');
 });
@@ -292,6 +313,7 @@ function onCalibPointsChanged() {
     try {
       state.calib = computeCalibration(state.cv, state.calibPts, videoSize());
       saveCalibration(state.calib);
+      state.tracker?.reset();
       showBanner('');
     } catch (err) {
       showBanner(`Calibration: ${err.message}`);
@@ -371,14 +393,62 @@ function restartDetectionLoop() {
   state.detectTimer = setInterval(detectOnce, 1000 / hz);
 }
 
+// Calibration that matches the current camera resolution, or null.
+function activeCalib() {
+  const c = state.calib;
+  const [w, h] = videoSize();
+  return c && c.camSize[0] === w && c.camSize[1] === h ? c : null;
+}
+
+function publishNotes(notes) {
+  state.proj.notes = notes;
+  channel.send('notes', { notes });
+}
+
+// Capsules (camera px) covering where each ball is, or recently was, so the
+// ball itself can never be detected as a note. The camera image lags behind
+// the projector, so the capsule reaches back along the ball's velocity.
+function ballBlockers(calib) {
+  const s = state.settings;
+  const now = Date.now();
+  const out = [];
+  for (const b of state.proj.balls) {
+    const age = Math.min(0.5, Math.max(0, (now - (b.t || now)) / 1000));
+    const px = b.x + b.vx * age;
+    const py = b.y + b.vy * age;
+    const back = [px - b.vx * s.ballLag, py - b.vy * s.ballLag];
+    const ahead = [px + b.vx * 0.05, py + b.vy * 0.05];
+    const c = projToCam(calib, [px, py]);
+    const ex = projToCam(calib, [px + b.rx, py]);
+    const ey = projToCam(calib, [px, py + b.ry]);
+    const r = Math.max(Math.hypot(ex[0] - c[0], ex[1] - c[1]), Math.hypot(ey[0] - c[0], ey[1] - c[1]));
+    out.push({ a: projToCam(calib, back), b: projToCam(calib, ahead), r: r * s.ballPad + 4 });
+  }
+  return out;
+}
+
 function detectOnce() {
   if (!state.detector) return;
   const [w, h] = videoSize();
   if (!w || !h || els.video.readyState < 2) return;
+  const calib = activeCalib();
   try {
-    state.lastDetect = state.detector.process(els.video, w, h, state.settings, {
+    state.blockers = calib ? ballBlockers(calib) : [];
+    const res = state.detector.process(els.video, w, h, state.settings, {
       maskCanvas: els.mask,
+      roi: calib && state.settings.roiOnly ? projectionQuadInCamera(calib) : null,
+      blockers: state.blockers,
     });
+    state.lastDetect = res;
+    if (!calib || state.calibrating || els.freezeNotes.checked) return;
+    const dets = res.notes
+      .map((n) => ({ corners: n.corners.map((p) => camToProj(calib, p)) }))
+      .filter((d) => {
+        const [x, y] = centroid(d.corners);
+        return x > -0.05 && x < 1.05 && y > -0.05 && y < 1.05;
+      });
+    const { notes, changed } = state.tracker.update(dets);
+    if (changed) publishNotes(notes);
   } catch (err) {
     console.error(err);
     showBanner(`Detection error: ${err.message || err}`);
@@ -431,7 +501,51 @@ function drawOverlays(w, h) {
     ctx.setLineDash([]);
   }
 
+  const d = state.lastDetect;
+  if (d && !state.calibrating) {
+    ctx.setLineDash([4 * k, 4 * k]);
+    ctx.strokeStyle = 'rgba(255,107,107,0.8)';
+    ctx.fillStyle = 'rgba(255,107,107,0.9)';
+    ctx.font = `${Math.round(11 * k)}px sans-serif`;
+    for (const r of d.rejected) {
+      poly(ctx, r.corners);
+      ctx.stroke();
+      ctx.fillText(r.reason, r.corners[0][0], r.corners[0][1] - 4 * k);
+    }
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255,213,79,0.9)';
+    for (const n of d.notes) {
+      poly(ctx, n.corners);
+      ctx.stroke();
+    }
+  }
+  const calib = activeCalib();
+  if (calib && !state.calibrating) {
+    ctx.lineWidth = 3 * k;
+    ctx.strokeStyle = '#7be35b';
+    ctx.fillStyle = '#7be35b';
+    ctx.font = `bold ${Math.round(14 * k)}px sans-serif`;
+    for (const n of state.proj.notes) {
+      const cam = n.corners.map((p) => projToCam(calib, p));
+      poly(ctx, cam);
+      ctx.stroke();
+      const [cx, cy] = centroid(cam);
+      ctx.fillText(`#${n.id}`, cx - 8 * k, cy + 5 * k);
+    }
+    ctx.fillStyle = 'rgba(255,107,107,0.35)';
+    for (const b of state.blockers) {
+      ctx.beginPath();
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 2 * b.r;
+      ctx.strokeStyle = 'rgba(255,107,107,0.35)';
+      ctx.moveTo(b.a[0], b.a[1]);
+      ctx.lineTo(b.b[0] + 0.01, b.b[1]);
+      ctx.stroke();
+    }
+  }
+
   if (state.calibrating) {
+    ctx.lineWidth = 2 * k;
     if (state.calibPts.length === 4) {
       ctx.strokeStyle = 'rgba(123,227,91,0.9)';
       poly(ctx, state.calibPts);
@@ -465,6 +579,7 @@ function renderStatus() {
     `Detection:  ${d ? `${d.ms.toFixed(1)} ms @ ${state.settings.rate} Hz (proc ${d.procSize.join('×')})` : '-'}`,
     `Projector:  ${Date.now() - state.projSeen < 3000 ? `<span class="ok">connected</span> (${state.proj.w}×${state.proj.h})` : '<span class="warn">not connected</span> - open projector.html'}`,
     `Calibrated: ${calibStatus(w, h)}`,
+    `Notes:      ${state.proj.notes.length} in play, ${state.tracker ? state.tracker.tentative().length : 0} pending, ${d ? d.notes.length : 0} detected this frame${els.freezeNotes.checked ? ' <span class="warn">(frozen)</span>' : ''}`,
   ];
   els.status.innerHTML = lines.join('\n');
 }
@@ -487,6 +602,7 @@ async function boot() {
   await selectCamera(id);
   state.cv = await cvReady();
   state.detector = new Detector(state.cv);
+  state.tracker = new NoteTracker(trackerOptions());
   restartDetectionLoop();
   renderStatus();
 }
