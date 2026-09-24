@@ -8,13 +8,15 @@
 //   notes   { notes: [{ id, corners: [[x,y] x4] }] }
 //   calib   { on: bool }                 show border + numbered corner dots
 //   cross   { pt: [x,y] | null }         calibration test crosshair
-//   cmd     { cmd: 'start'|'pause'|'toggleRun'|'resetBall'|'addBall'|'clearBalls' }
-//   config  { gravity, outlines, ballRadius, ballSpeed }
+//   cmd     { cmd: 'start'|'pause'|'toggleRun'|'resetBall'|'addBall'|'clearBalls'
+//                  |'toggleGravity'|'toggleOutlines' }
+//   config  { ballRadius, ballSpeed }    radius: fraction of min(w,h); speed: widths/s
 //   ping    {}                           asks the projector to say hello
 //
 // projector -> control
 //   hello   { w, h }                     projector window size in CSS px
-//   balls   { balls: [{x,y,rx,ry,vx,vy}], t, running }  ~10 Hz heartbeat
+//   balls   { balls: [{x,y,rx,ry,vx,vy}], t, running, gravity, outlines }
+//           ~10 Hz; rx/ry = radius / width|height, vx/vy per second
 
 export const CHANNEL_NAME = 'sticky-wall';
 

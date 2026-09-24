@@ -17,6 +17,12 @@
     <span class="spacer"></span>
     <button id="openProjector" title="Opens projector.html in a new window; drag it to the projector">Open projector window</button>
     <button id="calibrate" class="primary">Calibrate</button>
+    <span style="width:12px"></span>
+    <button id="runBtn" title="Start / pause the physics">Pause</button>
+    <button id="resetBall">Reset ball</button>
+    <button id="addBall">Add ball</button>
+    <button id="gravityBtn" title="Toggle gravity">Gravity</button>
+    <button id="outlinesBtn" title="Faint note outlines on the projector (debug)">Outlines</button>
   </div>
 
   <div class="layout">
@@ -50,6 +56,7 @@
           <button id="simRemove">Remove note</button>
           <button id="simShuffle">Shuffle notes</button>
           <label><input type="checkbox" id="simNoise" checked> Sensor noise</label>
+          <label title="Tints projected light cyan so the ball looks like a note to the threshold - tests the ball mask"><input type="checkbox" id="simTint"> Projector colour cast</label>
         </div>
         <div class="status">Drag notes in the camera view to move them. The projector picture is mirrored onto the fake wall.</div>
       </div>

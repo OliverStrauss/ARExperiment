@@ -96,6 +96,10 @@ export class SimCamera {
     this.notes = defaultNotes();
     this.dirty = true;
     this.noise = true;
+    // Tint projected light (a projector/camera white-balance mismatch). Makes
+    // the ball look saturated, so only the ball mask keeps it from being
+    // detected as a note - a good stress test.
+    this.tint = false;
 
     this.base = document.createElement('canvas');
     this.base.width = W;
@@ -233,7 +237,15 @@ export class SimCamera {
       this.proj.width = pw;
       this.proj.height = ph;
     }
-    drawScene(this.proj.getContext('2d'), pw, ph, scene);
+    const pctx = this.proj.getContext('2d');
+    drawScene(pctx, pw, ph, scene);
+    if (this.tint) {
+      pctx.save();
+      pctx.globalCompositeOperation = 'multiply';
+      pctx.fillStyle = 'rgb(40,230,255)';
+      pctx.fillRect(0, 0, pw, ph);
+      pctx.restore();
+    }
 
     // proj px -> proj-norm -> cam px
     const S = [1 / pw, 0, 0, 0, 1 / ph, 0, 0, 0, 1];

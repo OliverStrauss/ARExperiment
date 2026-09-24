@@ -27,6 +27,9 @@ const els = {
   magnifier: $('magnifier'),
   roiOnly: $('roiOnly'),
   freezeNotes: $('freezeNotes'),
+  runBtn: $('runBtn'),
+  gravityBtn: $('gravityBtn'),
+  outlinesBtn: $('outlinesBtn'),
 };
 const feedCtx = els.feed.getContext('2d');
 
@@ -46,7 +49,17 @@ const state = {
   tracker: null, // NoteTracker (projector-normalized)
   blockers: [], // ball mask capsules used in the last detection (camera px)
   // Mirror of what the projector is showing (drives the simulated camera).
-  proj: { w: 1920, h: 1080, calib: false, cross: null, notes: [], outlines: true, balls: [] },
+  proj: {
+    w: 1920,
+    h: 1080,
+    calib: false,
+    cross: null,
+    notes: [],
+    outlines: false,
+    balls: [], // [{x,y,rx,ry,vx,vy,t}] from the projector heartbeat
+    running: true,
+    gravity: false,
+  },
 };
 
 function projectorScene() {
@@ -59,20 +72,46 @@ function projectorScene() {
 const channel = createChannel('control', onMessage);
 
 function onMessage(msg) {
+  if (msg.type !== 'hello' && msg.type !== 'balls') return;
+  // A projector that (re)appears gets the full current state pushed to it.
+  const reconnect = Date.now() - state.projSeen > 3000;
+  state.projSeen = Date.now();
+  if (reconnect) setTimeout(syncProjector, 0);
   if (msg.type === 'hello') {
-    const reconnect = Date.now() - state.projSeen > 3000;
-    state.projSeen = Date.now();
     state.proj.w = msg.w;
     state.proj.h = msg.h;
-    if (reconnect) syncProjector();
+  } else {
+    state.proj.balls = msg.balls.map((b) => ({ ...b, t: msg.t }));
+    state.proj.running = msg.running;
+    state.proj.gravity = msg.gravity;
+    state.proj.outlines = msg.outlines;
+    updateGameButtons();
   }
 }
+
+function sendBallConfig() {
+  channel.send('config', { ballRadius: state.settings.ballRadius, ballSpeed: state.settings.ballSpeed });
+}
+
+function updateGameButtons() {
+  els.runBtn.textContent = state.proj.running ? 'Pause' : 'Start';
+  els.gravityBtn.classList.toggle('active', state.proj.gravity);
+  els.outlinesBtn.classList.toggle('active', state.proj.outlines);
+}
+
+const cmd = (name) => () => channel.send('cmd', { cmd: name });
+els.runBtn.addEventListener('click', cmd('toggleRun'));
+$('resetBall').addEventListener('click', cmd('resetBall'));
+$('addBall').addEventListener('click', cmd('addBall'));
+els.gravityBtn.addEventListener('click', cmd('toggleGravity'));
+els.outlinesBtn.addEventListener('click', cmd('toggleOutlines'));
 
 // Push everything the projector should be showing (after it (re)connects).
 function syncProjector() {
   channel.send('calib', { on: state.calibrating });
   channel.send('cross', { pt: state.proj.cross });
   channel.send('notes', { notes: state.proj.notes });
+  sendBallConfig();
 }
 
 setInterval(() => channel.send('ping'), 1000);
@@ -116,6 +155,7 @@ function buildSliders() {
       saveSettings(state.settings);
       if (s.key === 'rate') restartDetectionLoop();
       state.tracker?.setOptions(trackerOptions());
+      if (s.key === 'ballRadius' || s.key === 'ballSpeed') sendBallConfig();
     });
     groups.get(s.group).appendChild(row);
   }
@@ -127,6 +167,7 @@ els.resetSettings.addEventListener('click', () => {
   buildSliders();
   els.roiOnly.checked = state.settings.roiOnly;
   state.tracker?.setOptions(trackerOptions());
+  sendBallConfig();
   restartDetectionLoop();
 });
 
@@ -177,6 +218,8 @@ async function selectCamera(deviceId) {
     if (deviceId === SIM_DEVICE_ID) {
       const cv = await cvReady();
       state.sim = new SimCamera(cv, projectorScene);
+      state.sim.noise = $('simNoise').checked;
+      state.sim.tint = $('simTint').checked;
       state.stream = state.sim.stream;
     } else {
       state.stream = await openCamera(deviceId);
@@ -201,6 +244,7 @@ $('simAdd').addEventListener('click', () => state.sim?.addNote());
 $('simRemove').addEventListener('click', () => state.sim?.removeNote());
 $('simShuffle').addEventListener('click', () => state.sim?.shuffle());
 $('simNoise').addEventListener('change', (e) => { if (state.sim) state.sim.noise = e.target.checked; });
+$('simTint').addEventListener('change', (e) => { if (state.sim) state.sim.tint = e.target.checked; });
 
 // Mouse position over the feed canvas, in camera (video) pixels.
 function feedPoint(ev) {
@@ -427,6 +471,34 @@ function ballBlockers(calib) {
   return out;
 }
 
+// Is a note (projector-normalized corners) touched by any ball's mask capsule?
+// Measured in projector pixels so the ball stays round.
+function noteOccludedByBall(corners) {
+  const { w, h } = state.proj;
+  const s = state.settings;
+  const pts = corners.map(([x, y]) => [x * w, y * h]);
+  const c = centroid(pts);
+  const noteR = Math.max(...pts.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
+  const now = Date.now();
+  return state.proj.balls.some((b) => {
+    const age = Math.min(0.5, Math.max(0, (now - (b.t || now)) / 1000));
+    const px = (b.x + b.vx * age) * w;
+    const py = (b.y + b.vy * age) * h;
+    const ax = px - b.vx * w * s.ballLag;
+    const ay = py - b.vy * h * s.ballLag;
+    const r = b.rx * w * s.ballPad + noteR;
+    return distToSegment(c, [ax, ay], [px, py]) < r;
+  });
+}
+
+function distToSegment([x, y], [ax, ay], [bx, by]) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const L = dx * dx + dy * dy;
+  const t = L ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L)) : 0;
+  return Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
+
 function detectOnce() {
   if (!state.detector) return;
   const [w, h] = videoSize();
@@ -447,7 +519,7 @@ function detectOnce() {
         const [x, y] = centroid(d.corners);
         return x > -0.05 && x < 1.05 && y > -0.05 && y < 1.05;
       });
-    const { notes, changed } = state.tracker.update(dets);
+    const { notes, changed } = state.tracker.update(dets, noteOccludedByBall);
     if (changed) publishNotes(notes);
   } catch (err) {
     console.error(err);

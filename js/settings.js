@@ -23,6 +23,8 @@ export const SLIDERS = [
   { key: 'missM', group: 'Tracking (anti-flicker)', label: 'Frames to remove', min: 1, max: 15, step: 1, def: 5 },
   { key: 'smooth', group: 'Tracking (anti-flicker)', label: 'Smoothing', min: 0, max: 0.9, step: 0.05, def: 0.5 },
   { key: 'matchDist', group: 'Tracking (anti-flicker)', label: 'Match distance', min: 0.01, max: 0.2, step: 0.01, def: 0.06 },
+  { key: 'ballRadius', group: 'Ball', label: 'Ball size', min: 0.005, max: 0.08, step: 0.005, def: 0.025 },
+  { key: 'ballSpeed', group: 'Ball', label: 'Ball speed', min: 0.05, max: 1.5, step: 0.05, def: 0.45 },
   { key: 'ballPad', group: 'Ball mask', label: 'Radius multiplier', min: 1, max: 4, step: 0.1, def: 1.8 },
   { key: 'ballLag', group: 'Ball mask', label: 'Camera lag s', min: 0, max: 0.6, step: 0.05, def: 0.25 },
 ];

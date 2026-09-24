@@ -1,10 +1,31 @@
 import { createChannel } from './channel.js';
 import { drawScene } from './render.js';
+import { PhysicsWorld } from './physics.js';
 
 const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud');
 const hudStatus = document.getElementById('hudStatus');
+
+// Runtime toggles owned by the projector (so its keyboard shortcuts work too);
+// reported to the control window in every heartbeat.
+const PREFS_KEY = 'sticky-wall.projector.v1';
+const PREF_DEFAULTS = { running: true, gravity: false, outlines: false };
+function loadPrefs() {
+  try {
+    return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') };
+  } catch {
+    return { ...PREF_DEFAULTS };
+  }
+}
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}
+const prefs = loadPrefs();
 
 const state = {
   w: window.innerWidth,
@@ -15,6 +36,10 @@ const state = {
   lastControl: 0,
   lastMouse: Date.now(),
 };
+
+const physics = new PhysicsWorld(state.w, state.h);
+physics.setConfig({ gravity: prefs.gravity });
+physics.addBall();
 
 const channel = createChannel('projector', onMessage);
 
@@ -32,15 +57,57 @@ function onMessage(msg) {
       break;
     case 'notes':
       state.notes = msg.notes || [];
+      physics.setNotes(state.notes); // balls keep flying; only note bodies change
+      break;
+    case 'config': {
+      const cfg = {};
+      if (msg.ballRadius !== undefined) cfg.ballRadius = msg.ballRadius;
+      if (msg.ballSpeed !== undefined) cfg.ballSpeed = msg.ballSpeed;
+      physics.setConfig(cfg);
+      break;
+    }
+    case 'cmd':
+      runCommand(msg.cmd);
       break;
     default:
       break;
   }
 }
 
+function runCommand(cmd) {
+  switch (cmd) {
+    case 'start': prefs.running = true; break;
+    case 'pause': prefs.running = false; break;
+    case 'toggleRun': prefs.running = !prefs.running; break;
+    case 'resetBall': physics.resetBalls(); break;
+    case 'addBall': physics.addBall(); break;
+    case 'clearBalls': physics.clearBalls(); break;
+    case 'toggleGravity':
+      prefs.gravity = !prefs.gravity;
+      physics.setConfig({ gravity: prefs.gravity });
+      break;
+    case 'toggleOutlines': prefs.outlines = !prefs.outlines; break;
+    default: return;
+  }
+  savePrefs();
+  sendBalls();
+}
+
 function sayHello() {
   channel.send('hello', { w: state.w, h: state.h });
 }
+
+// ~10 Hz: ball positions (so control can mask them out of detection) + toggles.
+function sendBalls() {
+  channel.send('balls', {
+    balls: state.calib ? [] : physics.ballsNormalized(),
+    t: Date.now(),
+    running: prefs.running,
+    gravity: prefs.gravity,
+    outlines: prefs.outlines,
+  });
+}
+setInterval(sendBalls, 100);
 
 // ---------------------------------------------------------------- sizing
 
@@ -51,6 +118,7 @@ function resize() {
   canvas.width = Math.round(state.w * dpr);
   canvas.height = Math.round(state.h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  physics.resize(state.w, state.h);
   sayHello();
 }
 window.addEventListener('resize', resize);
@@ -81,24 +149,41 @@ function updateHud() {
 setInterval(updateHud, 1000);
 
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+  const k = e.key.toLowerCase();
+  if (k === 'f') toggleFullscreen();
+  else if (k === ' ') runCommand('toggleRun');
+  else if (k === 'o') runCommand('toggleOutlines');
+  else if (k === 'g') runCommand('toggleGravity');
+  else if (k === 'b') runCommand('addBall');
+  else if (k === 'r') runCommand('resetBall');
+  else return;
+  e.preventDefault();
 });
 
 // ---------------------------------------------------------------- render loop
 
-function frame() {
+let last = performance.now();
+
+function frame(now) {
+  const dt = now - last;
+  last = now;
+  // Physics is frozen while calibrating so a ball can't cover a dot.
+  if (prefs.running && !state.calib) physics.step(dt);
   drawScene(ctx, state.w, state.h, {
     calib: state.calib,
     cross: state.cross,
     notes: state.notes,
-    outlines: true, // debug outlines; becomes a toggle with the physics stage
-    balls: [],
+    outlines: prefs.outlines,
+    balls: state.calib ? [] : physics.ballsNormalized(),
   });
   requestAnimationFrame(frame);
 }
 
 // Heartbeat so the control window can show "projector connected".
 setInterval(sayHello, 1000);
+
+// Exposed for tests / debugging from the devtools console.
+window.stickyWall = { state, prefs, physics };
 
 resize();
 updateHud();

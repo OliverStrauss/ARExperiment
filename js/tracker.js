@@ -85,9 +85,12 @@ export class NoteTracker {
 
   /**
    * @param detections [{ corners: [[x,y] x4] }] in projector-normalized coords
+   * @param isOccluded optional (corners) => bool. Tracks under the ball keep
+   *        their shape and don't age: the ball mask cuts into the note there,
+   *        so what the camera sees is not the real outline.
    * @returns { notes: [{id, corners}], changed: bool }
    */
-  update(detections) {
+  update(detections, isOccluded = () => false) {
     const { seenN, missM, smooth, matchDist, deadband } = this.opts;
     const dets = detections.map((d) => {
       const corners = canonicalCorners(d.corners);
@@ -111,13 +114,18 @@ export class NoteTracker {
       usedT.add(ti);
       usedD.add(di);
       const t = this.tracks[ti];
+      t.seen++;
+      t.missed = 0;
+      if (!t.confirmed && t.seen >= seenN) t.confirmed = true;
+      if (t.confirmed && isOccluded(t.corners)) {
+        // keep the last good shape while the ball mask cuts into the note
+        if (!t.emitted) t.emitted = t.corners.map((p) => [...p]);
+        continue;
+      }
       const aligned = alignCorners(dets[di].corners, t.corners);
       const k = 1 - smooth;
       t.corners = t.corners.map((p, i) => [p[0] + (aligned[i][0] - p[0]) * k, p[1] + (aligned[i][1] - p[1]) * k]);
       t.center = centroid(t.corners);
-      t.seen++;
-      t.missed = 0;
-      if (!t.confirmed && t.seen >= seenN) t.confirmed = true;
       if (t.confirmed && (!t.emitted || maxCornerDelta(t.emitted, t.corners) > deadband)) {
         t.emitted = t.corners.map((p) => [...p]);
       }
@@ -126,6 +134,7 @@ export class NoteTracker {
     // Unmatched tracks age; tentative ones are dropped quickly.
     this.tracks = this.tracks.filter((t, ti) => {
       if (usedT.has(ti)) return true;
+      if (t.confirmed && isOccluded(t.corners)) return true; // hidden by the ball mask
       t.missed++;
       t.seen = t.confirmed ? t.seen : 0;
       return t.confirmed ? t.missed < missM : t.missed < 2;
