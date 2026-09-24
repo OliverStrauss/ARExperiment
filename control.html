@@ -15,6 +15,8 @@
     </label>
     <button id="refreshCams" title="Re-scan cameras">↻</button>
     <span class="spacer"></span>
+    <button id="openProjector" title="Opens projector.html in a new window; drag it to the projector">Open projector window</button>
+    <button id="calibrate" class="primary">Calibrate</button>
   </div>
 
   <div class="layout">
@@ -24,6 +26,21 @@
         <h2>Camera</h2>
         <div class="feed-wrap" id="feedWrap">
           <canvas class="feed" id="feed" width="1280" height="720"></canvas>
+          <canvas class="magnifier" id="magnifier" width="140" height="140"></canvas>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="crossTest"> Crosshair test (move the mouse over the feed; a crosshair should appear at the same spot on the wall)</label>
+          <button id="forgetCalib">Forget calibration</button>
+        </div>
+      </div>
+      <div class="card" id="calibPanel" style="margin-top:14px" hidden>
+        <h2>Calibration</h2>
+        <div class="status" id="calibMsg"></div>
+        <div class="row">
+          <button id="calibUndo">Undo point</button>
+          <button id="calibClear">Clear points</button>
+          <button id="calibDone" class="primary">Done</button>
+          <label><input type="checkbox" id="calibSnap" checked> Snap clicks to the dot centre</label>
         </div>
       </div>
       <div class="card" id="simPanel" style="margin-top:14px" hidden>
