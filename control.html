@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sticky-wall · control</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script async src="vendor/opencv.js"></script>
+</head>
+<body>
+  <div class="topbar">
+    <h1>sticky-wall</h1>
+    <label>Camera
+      <select id="cameraSelect"><option value="">Loading…</option></select>
+    </label>
+    <button id="refreshCams" title="Re-scan cameras">↻</button>
+    <span class="spacer"></span>
+    <button id="openProjector" title="Opens projector.html in a new window; drag it to the projector">Open projector window</button>
+    <button id="calibrate" class="primary">Calibrate</button>
+    <span style="width:12px"></span>
+    <button id="runBtn" title="Start / pause the physics">Pause</button>
+    <button id="resetBall">Reset ball</button>
+    <button id="addBall">Add ball</button>
+    <button id="gravityBtn" title="Toggle gravity">Gravity</button>
+    <button id="outlinesBtn" title="Faint note outlines on the projector (debug)">Outlines</button>
+  </div>
+
+  <div class="layout">
+    <div>
+      <div class="banner" id="banner" hidden></div>
+      <div class="card">
+        <h2>Camera</h2>
+        <div class="feed-wrap" id="feedWrap">
+          <canvas class="feed" id="feed" width="1280" height="720"></canvas>
+          <canvas class="magnifier" id="magnifier" width="140" height="140"></canvas>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="crossTest"> Crosshair test (move the mouse over the feed; a crosshair should appear at the same spot on the wall)</label>
+          <button id="forgetCalib">Forget calibration</button>
+        </div>
+      </div>
+      <div class="card" id="calibPanel" style="margin-top:14px" hidden>
+        <h2>Calibration</h2>
+        <div class="status" id="calibMsg"></div>
+        <div class="row">
+          <button id="calibUndo">Undo point</button>
+          <button id="calibClear">Clear points</button>
+          <button id="calibDone" class="primary">Done</button>
+          <label><input type="checkbox" id="calibSnap" checked> Snap clicks to the dot centre</label>
+        </div>
+      </div>
+      <div class="card" id="simPanel" style="margin-top:14px" hidden>
+        <h2>Simulated wall</h2>
+        <div class="row">
+          <button id="simAdd">Add note</button>
+          <button id="simRemove">Remove note</button>
+          <button id="simShuffle">Shuffle notes</button>
+          <label><input type="checkbox" id="simNoise" checked> Sensor noise</label>
+          <label title="Tints projected light cyan so the ball looks like a note to the threshold - tests the ball mask"><input type="checkbox" id="simTint"> Projector colour cast</label>
+        </div>
+        <div class="status">Drag notes in the camera view to move them. The projector picture is mirrored onto the fake wall.</div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>Status</h2>
+        <div class="status" id="status">Starting…</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>Threshold mask</h2>
+        <canvas class="mask" id="mask" width="640" height="360"></canvas>
+        <div class="status" style="margin-top:6px">Feed overlay: <span style="color:#7be35b">green</span> = note in play (id), <span style="color:#ffd54f">yellow</span> = detected this frame, <span style="color:#ff6b6b">red</span> = rejected blob / ball mask.</div>
+      </div>
+      <div class="card sliders" style="margin-top:14px">
+        <h2>Settings <button id="resetSettings" style="float:right;padding:2px 8px">Defaults</button></h2>
+        <div class="row" style="font-size:12px">
+          <label><input type="checkbox" id="roiOnly"> Only detect inside the projected area</label>
+          <label><input type="checkbox" id="freezeNotes"> Freeze notes</label>
+        </div>
+        <div id="sliders"></div>
+      </div>
+    </div>
+  </div>
+
+  <video id="video" playsinline muted hidden></video>
+  <script type="module" src="js/control.js"></script>
+</body>
+</html>

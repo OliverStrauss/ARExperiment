@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sticky-wall · projector</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="vendor/matter.min.js"></script>
+</head>
+<body class="projector">
+  <canvas id="stage"></canvas>
+  <div class="proj-hud" id="hud">
+    <p><strong>sticky-wall projector</strong></p>
+    <p id="hudStatus">Waiting for control window…</p>
+    <p>Drag this window onto the projector display, then:</p>
+    <button id="fullscreen" class="primary">Fullscreen (F)</button>
+    <p style="font-size:12px">Keys: F fullscreen · Space start/pause · O outlines · G gravity · B add ball · R reset</p>
+  </div>
+  <script type="module" src="js/projector.js"></script>
+</body>
+</html>
