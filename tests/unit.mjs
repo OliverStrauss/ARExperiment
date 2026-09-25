@@ -7,6 +7,7 @@ import { solveHomography, applyH, invertH, isConvexQuad } from '../js/homography
 import { snapToDot } from '../js/calibration.js';
 import { NOTE_COLORS, classifyColor } from '../js/colors.js';
 import { buildLanes, spanAt, rateLabel } from '../js/lanes.js';
+import { BeatEngine, ballProgress, ballY, clockPos } from '../js/beat.js';
 
 const require = createRequire(import.meta.url);
 let failed = 0;
@@ -210,6 +211,143 @@ test('lanes: rate labels', () => {
   assert.deepEqual([1, 2, 3, 4, 6, 8, 16, 32].map((n) => rateLabel(n)), ['1/16', '1/8', '3/16', '1/4', '3/8', '1/2', '1', '2']);
   assert.equal(rateLabel(5.9, false), '≈0.37');
   assert.equal(rateLabel(null), '—');
+});
+
+// ------------------------------------------------------------------ beat engine
+
+// One lane with a target n 16ths below the rail.
+function laneN(n, id = 1, color = 'green', targetId = 10) {
+  return { id, x: 0.5, w: 0.05, railNoteBottom: 0.1, targetId, color, top: 0.15 + n * 0.1, d: n * 0.1, n, shadowed: [] };
+}
+
+// Run the scheduler for `secs` with 25 ms ticks; returns all hits.
+function run(engine, t0, secs) {
+  const hits = [];
+  for (let t = t0; t < t0 + secs; t += 0.025) hits.push(...engine.tick(t));
+  return hits;
+}
+
+test('beat: at 96 BPM a lane with n = 4 hits exactly 0.625 s apart, each hit once', () => {
+  const e = new BeatEngine({ bpm: 96 });
+  e.setLanes([laneN(4)]);
+  e.start(100);
+  const hits = run(e, 100, 5);
+  assert.ok(hits.length >= 7, `hits: ${hits.length}`);
+  close(hits[0].time, 100, 1e-9, 'first hit on the downbeat');
+  hits.slice(1).forEach((h, i) => close(h.time - hits[i].time, 0.625, 1e-9, 'interval'));
+  assert.equal(new Set(hits.map((h) => h.pos)).size, hits.length, 'no duplicates');
+  assert.equal(hits[0].noteId, 10);
+  assert.equal(hits[0].instrument, 'bell');
+});
+
+test('beat: two balls give the union of both phase grids', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes([laneN(4)]);
+  e.start(0);
+  e.tick(0);
+  // at pos 1 (1/16 in), drop a second ball: it hits n/2 = 2 16ths later, at pos 3
+  const t1 = e.timeAt(1);
+  const b = e.addBall(1, t1);
+  assert.equal(b.phase, 3);
+  const hits = run(e, t1, 4).map((h) => h.pos);
+  const grid = hits.filter((p) => p % 4 === 0);
+  const off = hits.filter((p) => p % 4 === 3);
+  assert.equal(grid.length + off.length, hits.length);
+  assert.ok(grid.length >= 7 && off.length >= 7, `${grid.length} + ${off.length}`);
+  assert.equal(e.removeBall(1), true);
+  assert.equal(e.removeBall(1), false, 'a lane keeps at least one ball');
+});
+
+test('beat: max balls per lane, reset brings one ball back on the downbeat', () => {
+  const e = new BeatEngine({ maxBallsPerLane: 3 });
+  e.setLanes([laneN(4)]);
+  assert.ok(e.addBall(1, 0.3));
+  assert.ok(e.addBall(1, 0.7));
+  assert.equal(e.addBall(1, 0.9), null);
+  e.resetBalls();
+  assert.equal(e.ballsOf(1).length, 1);
+  assert.equal(e.ballsOf(1)[0].phase, 0);
+});
+
+test('beat: tempo change keeps phase continuity', () => {
+  const e = new BeatEngine({ bpm: 96 });
+  e.setLanes([laneN(2)]);
+  e.start(10);
+  const before = run(e, 10, 2);
+  const t = 12.01;
+  const p = e.pos(t);
+  e.setBpm(120, t);
+  close(e.pos(t), p, 1e-9, 'pos continuous across the change');
+  const after = run(e, t, 2);
+  assert.ok(after[0].pos > before.at(-1).pos, 'no hit repeated or lost');
+  close(after[0].pos - before.at(-1).pos, 2, 1e-9, 'next hit one lane length later');
+  after.slice(1).forEach((h, i) => close(h.time - after[i].time, 2 * (60 / 120 / 4), 1e-9, 'new interval'));
+});
+
+test('beat: stopped clock schedules nothing and holds its position', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.start(0);
+  run(e, 0, 1);
+  e.stop(1);
+  const p = e.pos(1);
+  assert.equal(e.tick(1.5).length, 0);
+  close(e.pos(9), p, 1e-9, 'frozen');
+  e.start(9);
+  close(e.pos(9), p, 1e-9, 'resumes where it stopped');
+});
+
+test('beat: mute and solo filter hits by colour', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes([laneN(4, 1, 'green', 10), laneN(4, 2, 'red', 11)]);
+  e.start(0);
+  let t = 0;
+  const colors = () => new Set(run(e, (t += 1) - 1, 1).map((h) => h.color));
+  assert.deepEqual([...colors()].sort(), ['green', 'red']);
+  e.toggleMute('red');
+  assert.deepEqual([...colors()], ['green']);
+  e.toggleSolo('red');
+  assert.deepEqual([...colors()], ['red'], 'solo wins over mute');
+  e.toggleSolo('red');
+  e.toggleMute('red');
+  assert.equal(colors().size, 2);
+});
+
+test('beat: idle lanes are silent; lanes keep balls until their rail note goes', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.addBall(1, 0.5);
+  e.setLanes([{ ...laneN(4), targetId: null, n: null, top: null, d: null }]);
+  e.start(0);
+  assert.equal(run(e, 0, 2).length, 0);
+  assert.equal(e.ballsOf(1).length, 2, 'balls kept while idle');
+  e.setLanes([laneN(4)]);
+  assert.ok(run(e, 2, 2).length > 0, 'resumes when a target appears');
+  e.setLanes([]);
+  assert.equal(e.ballsOf(1).length, 0, 'rail note removed -> balls gone');
+});
+
+test('beat: instruments stored by note id, forgotten when the note goes', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.setInstrument(10, 'kick');
+  e.start(0);
+  assert.equal(e.tick(0)[0].instrument, 'kick');
+  e.pruneInstruments([1, 2]);
+  assert.equal(e.instrumentOf(10), 'bell');
+});
+
+test('beat: ball goes rail -> target -> rail, touching the target on a hit', () => {
+  const lane = laneN(4);
+  assert.equal(ballProgress(0, 0, 4), 1);
+  assert.equal(ballProgress(2, 0, 4), 0);
+  close(ballProgress(1, 0, 4), 0.5, 1e-9, 'halfway');
+  close(ballY(lane, 0, 8, 0.15, 0.02), lane.top - 0.02, 1e-9, 'touches the top edge');
+  close(ballY(lane, 0, 10, 0.15, 0.02), 0.15, 1e-9, 'back at the rail');
+  const idle = { ...lane, n: null, top: null };
+  close(ballY(idle, 0, 3, 0.15, 0.02), 0.15, 1e-9, 'idle: waits at the rail');
+  const clock = { running: true, bpm: 60, anchor: 5, pos0: 8 };
+  close(clockPos(clock, 6), 12, 1e-9, '60 bpm = 4 16ths per second');
 });
 
 // ------------------------------------------------------------------ homography
