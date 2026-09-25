@@ -10,6 +10,7 @@ import { NOTE_COLORS, DEFAULT_PALETTE, classifyColor, freqOf, pitchOf } from './
 import { unlock, soundReady, playTone, playNote } from './sound.js';
 import { buildLanes, rateLabel, noteAt } from './lanes.js';
 import { InstrumentRing } from './ring.js';
+import { INSTRUMENTS } from './instruments.js';
 import { BeatEngine, epochNow, clockPos, ballY } from './beat.js';
 import { ballRadiusN, ballGapN, refScale, inflate, HALO_MS, HALO_MASK, BALL_R, BALL_GAP } from './render.js';
 import { keyAction } from './keys.js';
@@ -464,7 +465,86 @@ function drawEchoPanel() {
   }
 }
 
+// Lanes panel: one row per lane; click a row to highlight it. The instrument
+// and ball count can be set here too, so the laptop alone can configure all.
+let lanesSig = '';
+function renderLanes() {
+  const tbody = $('lanesTable').tBodies[0];
+  const rows = engine.lanes.map((l, i) => ({
+    id: l.id,
+    num: i + 1,
+    color: l.color,
+    targetId: l.targetId,
+    pitch: l.targetId == null ? null : pitchOf(l.color) ?? '?',
+    instrument: l.targetId == null ? null : engine.instrumentOf(l.targetId),
+    rate: l.n == null ? '—' : rateLabel(l.n, engine.snap),
+    balls: engine.ballsOf(l.id).length,
+    blocked: l.shadowed.length,
+    hi: l.id === state.highlight,
+    muted: l.targetId != null && !engine.audible(l.color),
+  }));
+  const sig = JSON.stringify(rows);
+  // don't rebuild under an open dropdown
+  if (sig === lanesSig || tbody.contains(document.activeElement)) return;
+  lanesSig = sig;
+  $('lanesEmpty').hidden = rows.length > 0;
+  $('lanesInfo').textContent = rows.length ? `${rows.length} lane${rows.length > 1 ? 's' : ''} · Tab / click to highlight` : '';
+  tbody.replaceChildren(...rows.map((r) => {
+    const tr = document.createElement('tr');
+    tr.className = `lane${r.hi ? ' hi' : ''}`;
+    const swatch = r.color ? `<span class="swatch" style="background:rgb(${state.palette[r.color].join(',')})"></span>` : '';
+    const target = r.targetId == null ? '<td class="idle">no target</td>' : `<td>${swatch}${r.pitch}${r.muted ? ' <span class="muted">muted</span>' : ''}</td>`;
+    const inst = r.targetId == null ? '<td class="idle">—</td>'
+      : `<td><select title="Instrument of this lane's target note">${INSTRUMENTS.map((x) => `<option${x === r.instrument ? ' selected' : ''}>${x}</option>`).join('')}</select></td>`;
+    tr.innerHTML = `<td>${r.num}</td>${target}${inst}<td>${r.rate}</td>
+      <td><button data-d="-1" title="Remove a ball (⇧B)">−</button> ${r.balls} <button data-d="1" title="Add a ball (B)">+</button></td>
+      <td class="${r.blocked ? '' : 'idle'}">${r.blocked || '—'}</td>`;
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('select')) return;
+      state.highlight = r.id;
+      const d = Number(e.target.dataset?.d);
+      if (d) runAction({ action: d > 0 ? 'addBall' : 'removeBall', cap: d > 0 ? 'B' : '⇧B' });
+      else sendBeat();
+    });
+    tr.querySelector('select')?.addEventListener('change', (e) => {
+      engine.setInstrument(r.targetId, e.target.value);
+      previewInstrument(r.targetId, e.target.value);
+      e.target.blur();
+      sendBeat();
+    });
+    return tr;
+  }));
+}
+
+function buildPitchButtons() {
+  $('pitchButtons').replaceChildren(...NOTE_COLORS.map(({ name, pitch }, i) => {
+    const b = document.createElement('button');
+    b.dataset.color = name;
+    b.title = `${name}: mute (${i + 1}) · solo (⇧${i + 1})`;
+    b.innerHTML = `<span class="swatch"></span>${pitch}`;
+    b.addEventListener('click', (e) => {
+      runAction(e.shiftKey ? { action: 'solo', arg: name, cap: `⇧${i + 1}` } : { action: 'mute', arg: name, cap: String(i + 1) });
+    });
+    return b;
+  }));
+}
+
+function renderPitchButtons() {
+  for (const b of $('pitchButtons').children) {
+    const c = b.dataset.color;
+    b.querySelector('.swatch').style.background = `rgb(${state.palette[c].join(',')})`;
+    b.classList.toggle('muted-pitch', !engine.audible(c));
+    b.classList.toggle('solo-pitch', engine.solo === c);
+  }
+}
+
+$('resetBalls').addEventListener('click', () => runAction({ action: 'reset', cap: 'R' }));
+$('helpBtn').addEventListener('click', () => runAction({ action: 'help', cap: '?' }));
+
 function renderBeatUI() {
+  renderLanes();
+  renderPitchButtons();
+  $('helpBtn').classList.toggle('active', state.overlay);
   els.runBtn.textContent = engine.running ? 'Stop' : 'Start';
   els.runBtn.classList.toggle('active', engine.running);
   els.bpmOut.textContent = `${engine.bpm} BPM`;
@@ -1175,6 +1255,7 @@ window.addEventListener('keydown', unlock);
 
 async function boot() {
   buildSliders();
+  buildPitchButtons();
   sendBeat();
   buildColorButtons();
   requestAnimationFrame(draw);

@@ -1,7 +1,7 @@
 {
   "name": "sticky-wall",
   "private": true,
-  "description": "Projector + webcam sticky-note bouncing ball wall. No build step: serve the folder statically.",
+  "description": "Projector + webcam sticky-note beat wall. No build step: serve the folder statically.",
   "type": "module",
   "scripts": {
     "start": "python3 -m http.server 8000",

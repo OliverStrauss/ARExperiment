@@ -457,6 +457,7 @@ function drawHelp(ctx, w, h) {
   ctx.fill();
   ctx.stroke();
   ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
   ctx.font = `${Math.round(15 * s)}px ${MONO}`;
   ctx.fillStyle = white(0.6);
   ctx.fillText('KEYS · ? TO CLOSE', x + 28 * s, y + lineH);

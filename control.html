@@ -65,6 +65,21 @@
         <div class="status">Drag notes in the camera view to move them. The projector picture is mirrored onto the fake wall.</div>
       </div>
       <div class="card" style="margin-top:14px">
+        <h2>Lanes <span class="h2-info" id="lanesInfo"></span></h2>
+        <table class="lanes" id="lanesTable">
+          <thead><tr><th>Lane</th><th>Target</th><th>Instrument</th><th>Rate</th><th>Balls</th><th>Blocked</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="status" id="lanesEmpty">Stick a note in the rail (the top band of the wall) to open a lane, then a note below it to hit.</div>
+        <div class="row">
+          <span class="status">Mute (click) / solo (⇧ click):</span>
+          <span id="pitchButtons" class="row" style="margin:0"></span>
+          <span class="spacer"></span>
+          <button id="resetBalls" title="One ball per lane, on the downbeat (R)">Reset balls (R)</button>
+          <button id="helpBtn" title="Show all keys on the wall (?)">Keys on wall (?)</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
         <h2>Echo <span class="h2-info" id="echoInfo"></span></h2>
         <canvas class="echo" id="echoCanvas" width="1000" height="60"></canvas>
         <div class="row">

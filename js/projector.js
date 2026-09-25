@@ -1,6 +1,7 @@
 import { createChannel } from './channel.js';
 import { drawScene, HALO_MS } from './render.js';
 import { epochNow } from './beat.js';
+import { keyAction } from './keys.js';
 
 // The projector only draws. The control window owns the notes, the beat engine
 // and the sound; balls are drawn analytically from the shared clock in the
@@ -120,12 +121,15 @@ setInterval(updateHud, 1000);
 
 window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key.toLowerCase() === 'f' && !e.repeat) {
-    toggleFullscreen();
+  const k = { key: e.key, code: e.code, shift: e.shiftKey, repeat: e.repeat };
+  const a = keyAction(k);
+  if (!a) return;
+  e.preventDefault(); // Tab / Space must not move focus or scroll
+  if (a.action === 'fullscreen') {
+    if (!e.repeat) toggleFullscreen();
   } else {
-    channel.send('key', { key: e.key, code: e.code, shift: e.shiftKey, repeat: e.repeat });
+    channel.send('key', k);
   }
-  if (e.key !== 'Shift') e.preventDefault(); // Tab / Space must not move focus or scroll
 });
 
 canvas.addEventListener('click', (e) => {

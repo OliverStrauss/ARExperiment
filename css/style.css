@@ -82,6 +82,19 @@ canvas.feed, canvas.mask {
   border-radius: 4px;
 }
 canvas.feed.calibrating { cursor: crosshair; }
+table.lanes { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.lanes th { text-align: left; color: var(--muted); font-weight: normal; font-size: 12px; padding: 2px 6px; border-bottom: 1px solid var(--line); }
+table.lanes td { padding: 4px 6px; border-bottom: 1px solid var(--line); font-family: ui-monospace, Menlo, monospace; }
+table.lanes tr.lane { cursor: pointer; }
+table.lanes tr.lane:hover td { background: #262a2f; }
+table.lanes tr.lane.hi td { background: #22323b; }
+table.lanes tr.lane.hi td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+table.lanes td.idle, table.lanes td .muted { color: var(--muted); }
+table.lanes select { padding: 2px 4px; font-size: 12px; }
+table.lanes button { padding: 0 7px; }
+.row .spacer { flex: 1; }
+button.muted-pitch { opacity: .45; text-decoration: line-through; }
+button.solo-pitch { border-color: var(--warn); color: var(--warn); }
 canvas.echo { display: block; width: 100%; height: auto; background: #000; border-radius: 4px; }
 .card h2 .h2-info { text-transform: none; letter-spacing: 0; font: 12px ui-monospace, Menlo, monospace; margin-left: 8px; }
 

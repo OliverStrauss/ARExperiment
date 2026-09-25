@@ -245,6 +245,30 @@ try {
   const lastInst = await ctl.evaluate(() => window.stickyWall.state.hitLog.at(-1).instrument);
   check(lastInst === 'kick', `hits now play the kick (${lastInst})`);
 
+  console.log('keys, toasts, mute');
+  await proj.keyboard.press('Digit3'); // green = 3rd colour
+  await sleep(200);
+  const toastText = await proj.evaluate(() => window.stickyWall.state.toast?.text);
+  check(/Mute green/.test(toastText || ''), `3 mutes green, with a toast on the wall ("${toastText}")`);
+  const muted = await hitsIn(1.5);
+  check(muted.length === 0, `muted pitch is silent (${muted.length} hits)`);
+  await proj.keyboard.press('Digit3');
+  await proj.keyboard.press('Shift+Slash');
+  await sleep(300);
+  check(await proj.evaluate(() => window.stickyWall.state.beat.overlay), '? shows the key overlay on the wall');
+  await proj.screenshot({ path: path.join(OUT, '3-keys-projector.png') });
+  await proj.keyboard.press('Shift+Slash');
+  const bpm0 = await ctl.evaluate(() => window.stickyWall.engine.bpm);
+  await proj.keyboard.press('BracketRight');
+  await proj.keyboard.press('Shift+BracketRight');
+  await sleep(200);
+  const bpm1 = await ctl.evaluate(() => window.stickyWall.engine.bpm);
+  check(bpm1 === bpm0 + 12, `] and ⇧] raise the tempo by 2 and 10 (${bpm0} -> ${bpm1})`);
+  await proj.keyboard.press('Shift+BracketLeft');
+  await proj.keyboard.press('BracketLeft');
+  const laneRows = await ctl.$$eval('#lanesTable tbody tr', (trs) => trs.map((tr) => tr.innerText.replace(/\s+/g, ' ')));
+  check(laneRows.length === 1 && /E4/.test(laneRows[0]) && /1\/4/.test(laneRows[0]), `Lanes panel row: ${laneRows[0]}`);
+
   console.log('echo + keep');
   const rows = await proj.evaluate(() => window.stickyWall.state.echo?.rows?.map((r) => r.pitch) || []);
   check(rows.includes('E4'), `echo strip on the wall shows the target's pitch (${rows.join(',')})`);
