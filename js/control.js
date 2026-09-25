@@ -7,8 +7,9 @@ import { SimCamera } from './simcam.js';
 import { cvReady } from './cvload.js';
 import { Detector } from './vision.js';
 import { NOTE_COLORS, DEFAULT_PALETTE, classifyColor, freqOf, pitchOf } from './colors.js';
-import { unlock, soundReady, playTone } from './sound.js';
-import { buildLanes, rateLabel } from './lanes.js';
+import { unlock, soundReady, playTone, playNote } from './sound.js';
+import { buildLanes, rateLabel, noteAt } from './lanes.js';
+import { InstrumentRing } from './ring.js';
 import { BeatEngine, epochNow, clockPos, ballY } from './beat.js';
 import { ballRadiusN, ballGapN, refScale, inflate, HALO_MS, HALO_MASK, BALL_R, BALL_GAP } from './render.js';
 import { keyAction } from './keys.js';
@@ -80,6 +81,7 @@ const state = {
   },
 };
 
+const ring = new InstrumentRing();
 const engine = new BeatEngine({
   bpm: state.settings.bpm,
   snap: state.settings.snap,
@@ -100,6 +102,10 @@ const channel = createChannel('control', onMessage);
 function onMessage(msg) {
   if (msg.type === 'key') {
     handleKey(msg);
+    return;
+  }
+  if (msg.type === 'click') {
+    clickWall([msg.x, msg.y]);
     return;
   }
   if (msg.type !== 'hello') return;
@@ -124,6 +130,10 @@ function rebuildLanes() {
   const lanes = buildLanes(state.proj.notes, laneOptions());
   engine.setLanes(lanes);
   engine.pruneInstruments(state.proj.notes.map((n) => n.id));
+  if (ring.isOpen && !state.proj.notes.some((n) => n.id === ring.noteId)) {
+    ring.cancel();
+    sendRing();
+  }
   const ids = lanes.map((l) => l.id);
   for (const id of Object.keys(state.offsets)) if (!ids.includes(Number(id))) delete state.offsets[id];
   if (!ids.includes(state.highlight)) state.highlight = ids[0] ?? null;
@@ -171,8 +181,7 @@ setInterval(sendBeat, 1000); // keep-alive
 function schedulerTick() {
   const hits = engine.tick(epochNow());
   for (const h of hits) {
-    const f = freqOf(h.color) ?? freqOf('purple');
-    playTone(f, h.velocity, h.time);
+    playNote(h.instrument, freqOf(h.color) ?? freqOf('purple'), h.velocity, h.time);
     channel.send('hitFx', { noteId: h.noteId, color: h.color, at: h.time });
     state.halos.push({ noteId: h.noteId, color: h.color, at: h.time });
     state.hitLog.push(h);
@@ -180,6 +189,7 @@ function schedulerTick() {
   if (state.hitLog.length > 500) state.hitLog.splice(0, state.hitLog.length - 500);
   const old = epochNow() - HALO_MS / 1000 - state.settings.ballLag - 0.1;
   if (state.halos.length && state.halos[0].at < old) state.halos = state.halos.filter((h) => h.at >= old);
+  if (ring.expired(epochNow())) runAction({ action: 'ringCommit', cap: '⏱' });
 }
 setInterval(schedulerTick, 25);
 
@@ -258,6 +268,33 @@ function runAction(a) {
       engine.resetBalls();
       toast(a.cap, 'Balls reset: 1 per lane');
       break;
+    case 'openRing': {
+      if (!lane?.targetId) return toast(a.cap, lane ? `${laneName(lane.id)} has no target` : 'No lane highlighted');
+      openRing(lane.targetId, a.cap);
+      break;
+    }
+    case 'spin': {
+      if (!ring.isOpen) return; // arrows only belong to the ring
+      const inst = ring.spin(a.arg, now);
+      previewInstrument(ring.noteId, inst);
+      sendRing();
+      toast(a.cap, inst);
+      break;
+    }
+    case 'ringCommit': {
+      const res = ring.commit();
+      if (!res) return;
+      engine.setInstrument(res.noteId, res.instrument);
+      sendRing();
+      toast(a.cap, `${noteLabel(res.noteId)} → ${res.instrument}`);
+      break;
+    }
+    case 'ringCancel':
+      if (!ring.isOpen) return;
+      ring.cancel();
+      sendRing();
+      toast(a.cap, 'Instrument unchanged');
+      break;
     case 'help':
       state.overlay = !state.overlay;
       toast(a.cap, state.overlay ? 'Keys' : 'Keys hidden');
@@ -266,6 +303,40 @@ function runAction(a) {
       return;
   }
   sendBeat();
+}
+
+function noteColor(noteId) {
+  return state.proj.notes.find((n) => n.id === noteId)?.color;
+}
+
+function noteLabel(noteId) {
+  return pitchOf(noteColor(noteId)) ?? `#${noteId}`;
+}
+
+function previewInstrument(noteId, inst) {
+  playNote(inst, freqOf(noteColor(noteId)) ?? freqOf('purple'), 0.8);
+}
+
+function sendRing() {
+  state.proj.ring = ring.isOpen ? ring.view() : null;
+  channel.send('ring', ring.view());
+}
+
+function openRing(noteId, cap) {
+  ring.open(noteId, engine.instrumentOf(noteId), epochNow());
+  sendRing();
+  toast(cap, `${noteLabel(noteId)} · ${ring.current} · ← → to spin`);
+}
+
+// A click on the wall (projector window): a second click keeps the ring's
+// choice, a click on a note opens the ring on it. Rail notes can't be clicked.
+function clickWall(pt) {
+  if (ring.isOpen) {
+    runAction({ action: 'ringCommit', cap: 'Click' });
+    return;
+  }
+  const note = noteAt(state.proj.notes, pt, state.settings.railBottom);
+  if (note) openRing(note.id, 'Click');
 }
 
 function handleKey(k) {
@@ -323,7 +394,7 @@ $('openProjector').addEventListener('click', () => {
 });
 
 // For tests / debugging from the devtools console.
-window.stickyWall = { state, channel, engine, runAction };
+window.stickyWall = { state, channel, engine, ring, runAction };
 
 // ---------------------------------------------------------------- UI helpers
 

@@ -6,12 +6,20 @@
 // sample-accurately when it is *heard* at that epoch time.
 
 import { epochNow } from './beat.js';
+import { playVoice } from './instruments.js';
 
 let ctx = null;
+let out = null; // master bus: a compressor so stacked hits don't clip
 let offset = null; // AudioContext time - epoch time, smoothed
 
 export function unlock() {
-  ctx ??= new AudioContext();
+  if (!ctx) {
+    ctx = new AudioContext();
+    out = ctx.createDynamicsCompressor();
+    out.threshold.value = -12;
+    out.ratio.value = 6;
+    out.connect(ctx.destination);
+  }
   if (ctx.state === 'suspended') ctx.resume();
 }
 
@@ -35,26 +43,15 @@ export function audioTime(t) {
 }
 
 /**
- * Plucked-bell tone.
- * @param freq Hz  @param strength 0..1  @param when epoch s (default: now)
+ * @param instrument id from instruments.js  @param freq Hz
+ * @param velocity 0..1  @param when epoch s (default: now)
  */
-export function playTone(freq, strength = 1, when = null) {
+export function playNote(instrument, freq, velocity = 1, when = null) {
   if (!soundReady()) return;
-  const t = when == null ? ctx.currentTime : audioTime(when);
-  const peak = 0.05 + 0.25 * Math.min(1, Math.max(0, strength));
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(peak, t);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.2);
-  gain.connect(ctx.destination);
-  // fundamental + a quiet octave for a bit of shimmer
-  for (const [mult, level] of [[1, 1], [2, 0.3]]) {
-    const osc = ctx.createOscillator();
-    osc.type = 'triangle';
-    osc.frequency.value = freq * mult;
-    const g = ctx.createGain();
-    g.gain.value = level;
-    osc.connect(g).connect(gain);
-    osc.start(t);
-    osc.stop(t + 1.25);
-  }
+  playVoice(ctx, out, instrument, freq, when == null ? ctx.currentTime : audioTime(when), velocity);
+}
+
+/** The default bell, e.g. to preview a colour's pitch. */
+export function playTone(freq, velocity = 1, when = null) {
+  playNote('bell', freq, velocity, when);
 }

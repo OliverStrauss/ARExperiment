@@ -6,7 +6,9 @@ import { NoteTracker, canonicalCorners, centroid } from '../js/tracker.js';
 import { solveHomography, applyH, invertH, isConvexQuad } from '../js/homography.js';
 import { snapToDot } from '../js/calibration.js';
 import { NOTE_COLORS, classifyColor } from '../js/colors.js';
-import { buildLanes, spanAt, rateLabel } from '../js/lanes.js';
+import { buildLanes, spanAt, rateLabel, noteAt } from '../js/lanes.js';
+import { InstrumentRing } from '../js/ring.js';
+import { INSTRUMENTS } from '../js/instruments.js';
 import { BeatEngine, ballProgress, ballY, clockPos } from '../js/beat.js';
 
 const require = createRequire(import.meta.url);
@@ -348,6 +350,51 @@ test('beat: ball goes rail -> target -> rail, touching the target on a hit', () 
   close(ballY(idle, 0, 3, 0.15, 0.02), 0.15, 1e-9, 'idle: waits at the rail');
   const clock = { running: true, bpm: 60, anchor: 5, pos0: 8 };
   close(clockPos(clock, 6), 12, 1e-9, '60 bpm = 4 16ths per second');
+});
+
+// ------------------------------------------------------------------ instrument ring
+
+test('ring: spin wraps around both ways', () => {
+  const r = new InstrumentRing(INSTRUMENTS, 4);
+  r.open(5, 'bell', 0);
+  assert.equal(r.spin(-1, 1), 'tom');
+  assert.equal(r.spin(1, 1), 'bell');
+  for (let i = 0; i < INSTRUMENTS.length; i++) r.spin(1, 1);
+  assert.equal(r.current, 'bell', 'a full turn comes back');
+});
+
+test('ring: commit stores the instrument by note id; Esc leaves it unchanged', () => {
+  const e = new BeatEngine();
+  const r = new InstrumentRing();
+  r.open(7, e.instrumentOf(7), 0);
+  r.spin(1, 0);
+  r.spin(1, 0);
+  const res = r.commit();
+  e.setInstrument(res.noteId, res.instrument);
+  assert.equal(e.instrumentOf(7), 'marimba');
+  assert.equal(r.isOpen, false);
+  r.open(7, e.instrumentOf(7), 0);
+  assert.equal(r.current, 'marimba', 'opens on the current choice');
+  r.spin(1, 0);
+  r.cancel();
+  assert.equal(r.commit(), null);
+  assert.equal(e.instrumentOf(7), 'marimba');
+});
+
+test('ring: commits by itself after 4 s idle; spinning restarts the countdown', () => {
+  const r = new InstrumentRing(INSTRUMENTS, 4);
+  r.open(1, 'bell', 10);
+  assert.equal(r.expired(13.9), false);
+  r.spin(1, 13);
+  assert.equal(r.expired(16.9), false);
+  assert.equal(r.expired(17), true);
+});
+
+test('ring: clicks hit notes but never rail notes', () => {
+  const notes = [box(1, 0.5, 0.02), box(2, 0.5, 0.5)];
+  assert.equal(noteAt(notes, [0.5, 0.52], 0.15)?.id, 2);
+  assert.equal(noteAt(notes, [0.5, 0.05], 0.15), null, 'rail note');
+  assert.equal(noteAt(notes, [0.9, 0.9], 0.15), null, 'empty wall');
 });
 
 // ------------------------------------------------------------------ homography

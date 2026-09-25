@@ -38,6 +38,21 @@ export function spanAt(poly, x) {
   return top === Infinity ? null : [top, bottom];
 }
 
+export function pointInPoly([x, y], poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** The non-rail note under a point (for clicks on the wall), or null. */
+export function noteAt(notes, pt, railBottom = LANE_DEFAULTS.railBottom) {
+  return notes.find((n) => centroid(n.corners)[1] >= railBottom && pointInPoly(pt, n.corners)) ?? null;
+}
+
 /**
  * @param notes [{ id, corners: [[x,y] x4], color }] tracked notes
  * @param opts  see LANE_DEFAULTS

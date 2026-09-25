@@ -156,7 +156,8 @@ body.projector canvas {
   color: #888;
   cursor: default;
 }
-.proj-hud button { margin: 6px; }
+.proj-hud { pointer-events: none; } /* clicks go through to the wall, except the button */
+.proj-hud button { margin: 6px; pointer-events: auto; }
 .proj-hud[hidden] { display: none; }
 
 /* ---------- index.html ---------- */

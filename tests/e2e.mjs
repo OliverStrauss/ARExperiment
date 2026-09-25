@@ -221,6 +221,30 @@ try {
   check(counts.size === 1 && counts.has(3), `balls and halos never detected as notes (counts seen: ${[...counts]})`);
   await ctl.screenshot({ path: path.join(OUT, '2-beat-control.png') });
 
+  console.log('instrument ring');
+  const tgt = await ctl.evaluate(() => {
+    const s = window.stickyWall.state;
+    const id = window.stickyWall.engine.lanes[0].targetId;
+    const n = s.proj.notes.find((m) => m.id === id);
+    return { id, c: [n.corners.reduce((a, p) => a + p[0], 0) / 4, n.corners.reduce((a, p) => a + p[1], 0) / 4] };
+  });
+  const vp = proj.viewportSize();
+  await proj.mouse.click(tgt.c[0] * vp.width, tgt.c[1] * vp.height);
+  await sleep(300);
+  check(await proj.evaluate((id) => window.stickyWall.state.ring?.noteId === id, tgt.id), 'clicking the target on the wall opens the ring on it');
+  await proj.keyboard.press('ArrowLeft');
+  await proj.keyboard.press('ArrowLeft');
+  await sleep(300);
+  await proj.screenshot({ path: path.join(OUT, '3-ring-projector.png') });
+  await proj.keyboard.press('Enter');
+  await sleep(300);
+  const inst = await ctl.evaluate(() => window.stickyWall.engine.lanes.map((l) => window.stickyWall.engine.instrumentOf(l.targetId))[0]);
+  check(inst === 'kick', `← ← ↵ sets the lane's instrument to kick (${inst})`);
+  check(await proj.evaluate(() => !window.stickyWall.state.ring), 'ring closes on ↵');
+  await sleep(1000);
+  const lastInst = await ctl.evaluate(() => window.stickyWall.state.hitLog.at(-1).instrument);
+  check(lastInst === 'kick', `hits now play the kick (${lastInst})`);
+
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {
   await browser.close();
