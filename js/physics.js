@@ -8,7 +8,7 @@
 //
 // matter.js velocities are "pixels per 1000/60 ms"; multiply by 60 for px/s.
 
-const { Engine, Bodies, Body, Composite, Vertices, Collision } = window.Matter;
+const { Engine, Events, Bodies, Body, Composite, Vertices, Collision } = window.Matter;
 
 const WALL = 1000; // wall thickness in px: thick enough that nothing tunnels
 const SUBSTEP_MS = 1000 / 120;
@@ -33,6 +33,8 @@ const DROP_OPTS = {
 };
 const STEER_SPEED = 0.5; // screen widths per second while an arrow key is held
 const STATIC_OPTS = { isStatic: true, restitution: 1, friction: 0, frictionStatic: 0 };
+const HIT_MIN = 0.04; // impacts slower than this fraction of ball speed are silent (rolling, settling)
+const HIT_COOLDOWN_MS = 120; // same ball + same note can't retrigger faster than this
 
 export class PhysicsWorld {
   constructor(w, h) {
@@ -47,7 +49,9 @@ export class PhysicsWorld {
     this.notes = new Map(); // id -> { key, corners (normalized), body }
     this.config = { mode: 'bounce', gravity: false, ballRadius: 0.012, ballSpeed: 0.45 };
     this.steerDir = 0; // -1 left, 0, +1 right (drop mode)
+    this.onHit = null; // ({ id, color, strength 0..1 }) => void, when a ball hits a note
     this._buildWalls();
+    Events.on(this.engine, 'collisionStart', (e) => this._onCollisions(e.pairs));
   }
 
   // ---------------------------------------------------------------- geometry
@@ -98,7 +102,7 @@ export class PhysicsWorld {
 
   // ---------------------------------------------------------------- notes
 
-  /** @param notes [{ id, corners: [[x,y] x4] }] projector-normalized */
+  /** @param notes [{ id, corners: [[x,y] x4], color? }] projector-normalized */
   setNotes(notes) {
     const seen = new Set();
     const touched = [];
@@ -106,14 +110,18 @@ export class PhysicsWorld {
       seen.add(n.id);
       const key = JSON.stringify(n.corners);
       const old = this.notes.get(n.id);
-      if (old && old.key === key) continue;
+      if (old && old.key === key) {
+        old.color = n.color;
+        continue;
+      }
       if (old?.body) Composite.remove(this.world, old.body);
       const body = this._noteBody(n.corners);
       if (body) {
+        body.plugin.noteId = n.id;
         Composite.add(this.world, body);
         touched.push(body);
       }
-      this.notes.set(n.id, { key, corners: n.corners, body });
+      this.notes.set(n.id, { key, corners: n.corners, body, color: n.color });
     }
     for (const [id, n] of this.notes) {
       if (seen.has(id)) continue;
@@ -129,6 +137,29 @@ export class PhysicsWorld {
     if (Math.abs(Vertices.area(verts, true)) < 16) return null;
     const c = Vertices.centre(verts);
     return Bodies.fromVertices(c.x, c.y, [verts], STATIC_OPTS);
+  }
+
+  // collisionStart fires before the solver, so the ball's velocity is still
+  // the incoming one: its component along the contact normal is the impact.
+  _onCollisions(pairs) {
+    if (!this.onHit) return;
+    const now = this.engine.timing.timestamp;
+    for (const pair of pairs) {
+      const a = pair.bodyA.parent;
+      const b = pair.bodyB.parent;
+      const ball = a.label === 'ball' ? a : b.label === 'ball' ? b : null;
+      const other = ball === a ? b : a;
+      const id = other.plugin?.noteId;
+      if (!ball || ball.plugin.held || id === undefined) continue;
+      const v = Body.getVelocity(ball);
+      const n = pair.collision.normal;
+      const strength = Math.min(1, Math.abs(v.x * n.x + v.y * n.y) / this.speedUnits());
+      if (strength < HIT_MIN) continue;
+      const last = ball.plugin.lastHit;
+      if (last && last.id === id && now - last.t < HIT_COOLDOWN_MS) continue;
+      ball.plugin.lastHit = { id, t: now };
+      this.onHit({ id, color: this.notes.get(id)?.color, strength });
+    }
   }
 
   // Push a ball out of any overlapping bodies; respawn it if it is deep inside.

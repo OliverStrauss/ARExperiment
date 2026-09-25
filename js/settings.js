@@ -4,6 +4,7 @@
 // v2: new defaults for far-away walls / smaller ball (old v1 values are ignored)
 const KEY = 'sticky-wall.settings.v2';
 const CALIB_KEY = 'sticky-wall.calibration.v1';
+const PALETTE_KEY = 'sticky-wall.palette.v1';
 
 // Slider schema: drives both the defaults and the generated UI in control.html.
 // Areas are a percentage of the camera frame so they survive resolution changes.
@@ -67,6 +68,25 @@ export function saveCalibration(calib) {
   try {
     if (calib) localStorage.setItem(CALIB_KEY, JSON.stringify(calib));
     else localStorage.removeItem(CALIB_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+// Taught note colours { name: [r,g,b] }, kept apart from the sliders so
+// "Defaults" doesn't forget them.
+export function loadPalette(defaults) {
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(PALETTE_KEY) || '{}') };
+  } catch {
+    return { ...defaults };
+  }
+}
+
+export function savePalette(palette) {
+  try {
+    if (palette) localStorage.setItem(PALETTE_KEY, JSON.stringify(palette));
+    else localStorage.removeItem(PALETTE_KEY);
   } catch {
     /* ignore */
   }

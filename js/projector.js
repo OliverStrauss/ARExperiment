@@ -43,6 +43,10 @@ physics.resetBalls();
 
 const channel = createChannel('projector', onMessage);
 
+// Sound plays in the control window: it gets the clicks/keys browsers require
+// before audio may start, and the projector window usually never does.
+physics.onHit = (hit) => channel.send('hit', hit);
+
 function onMessage(msg) {
   state.lastControl = Date.now();
   switch (msg.type) {

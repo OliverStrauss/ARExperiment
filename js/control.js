@@ -1,4 +1,4 @@
-import { SLIDERS, DEFAULTS, loadSettings, saveSettings, loadCalibration, saveCalibration } from './settings.js';
+import { SLIDERS, DEFAULTS, loadSettings, saveSettings, loadCalibration, saveCalibration, loadPalette, savePalette } from './settings.js';
 import { createChannel } from './channel.js';
 import { computeCalibration, camToProj, projToCam, projectionQuadInCamera, snapToDot } from './calibration.js';
 import { NoteTracker, centroid } from './tracker.js';
@@ -6,6 +6,8 @@ import { listCameras, openCamera, stopStream, SIM_DEVICE_ID } from './camera.js'
 import { SimCamera } from './simcam.js';
 import { cvReady } from './cvload.js';
 import { Detector } from './vision.js';
+import { NOTE_COLORS, DEFAULT_PALETTE, classifyColor, freqOf } from './colors.js';
+import { unlock, soundReady, playTone } from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -31,6 +33,8 @@ const els = {
   gravityBtn: $('gravityBtn'),
   outlinesBtn: $('outlinesBtn'),
   modeBtn: $('modeBtn'),
+  colorButtons: $('colorButtons'),
+  colorMsg: $('colorMsg'),
 };
 const feedCtx = els.feed.getContext('2d');
 
@@ -49,6 +53,8 @@ const state = {
   projSeen: 0, // last time we heard from the projector (ms)
   tracker: null, // NoteTracker (projector-normalized)
   blockers: [], // ball mask capsules used in the last detection (camera px)
+  palette: loadPalette(DEFAULT_PALETTE), // { colour name: [r,g,b] as the camera sees it }
+  teaching: null, // colour name waiting for a click on a note in the feed
   // Mirror of what the projector is showing (drives the simulated camera).
   proj: {
     w: 1920,
@@ -74,6 +80,11 @@ function projectorScene() {
 const channel = createChannel('control', onMessage);
 
 function onMessage(msg) {
+  if (msg.type === 'hit') {
+    const f = freqOf(msg.color);
+    if (f) playTone(f, msg.strength);
+    return;
+  }
   if (msg.type !== 'hello' && msg.type !== 'balls') return;
   // A projector that (re)appears gets the full current state pushed to it.
   const reconnect = Date.now() - state.projSeen > 3000;
@@ -311,6 +322,10 @@ let simDrag = -1;
 els.feed.addEventListener('pointerdown', (ev) => {
   if (ev.button !== 0) return;
   const p = feedPoint(ev);
+  if (state.teaching) {
+    teachColor(p);
+    return;
+  }
   if (state.calibrating) {
     const hit = 14 * camPxPerScreenPx();
     calibDrag = state.calibPts.findIndex(([x, y]) => Math.hypot(x - p[0], y - p[1]) < hit);
@@ -558,7 +573,7 @@ function detectOnce() {
     state.lastDetect = res;
     if (!calib || state.calibrating || els.freezeNotes.checked) return;
     const dets = res.notes
-      .map((n) => ({ corners: n.corners.map((p) => camToProj(calib, p)) }))
+      .map((n) => ({ corners: n.corners.map((p) => camToProj(calib, p)), color: classifyColor(n.rgb, state.palette) }))
       .filter((d) => {
         const [x, y] = centroid(d.corners);
         return x > -0.05 && x < 1.05 && y > -0.05 && y < 1.05;
@@ -646,7 +661,7 @@ function drawOverlays(w, h) {
       poly(ctx, cam);
       ctx.stroke();
       const [cx, cy] = centroid(cam);
-      ctx.fillText(`#${n.id}`, cx - 8 * k, cy + 5 * k);
+      ctx.fillText(`#${n.id} ${n.color || ''}`, cx - 8 * k, cy + 5 * k);
     }
     ctx.fillStyle = 'rgba(255,107,107,0.35)';
     for (const b of state.blockers) {
@@ -695,6 +710,7 @@ function renderStatus() {
     `Detection:  ${d ? `${d.ms.toFixed(1)} ms @ ${state.settings.rate} Hz (proc ${d.procSize.join('×')})` : '-'}`,
     `Projector:  ${Date.now() - state.projSeen < 3000 ? `<span class="ok">connected</span> (${state.proj.w}×${state.proj.h})` : '<span class="warn">not connected</span> - open projector.html'}`,
     `Calibrated: ${calibStatus(w, h)}`,
+    `Sound:      ${soundReady() ? '<span class="ok">on</span>' : '<span class="warn">off</span> - click anywhere on this page to enable'}`,
     `Notes:      ${state.proj.notes.length} in play, ${state.tracker ? state.tracker.tentative().length : 0} pending, ${d ? d.notes.length : 0} detected this frame${els.freezeNotes.checked ? ' <span class="warn">(frozen)</span>' : ''}`,
   ];
   els.status.innerHTML = lines.join('\n');
@@ -709,10 +725,67 @@ function calibStatus(w, h) {
   return `<span class="ok">yes</span> (${new Date(c.created).toLocaleString()})`;
 }
 
+// ---------------------------------------------------------------- note colours
+// Teach: pick a colour, then click a detected note (yellow outline) in the feed.
+// Its measured average colour becomes that colour's reference.
+
+function buildColorButtons() {
+  els.colorButtons.replaceChildren(...NOTE_COLORS.map(({ name }) => {
+    const b = document.createElement('button');
+    b.dataset.color = name;
+    b.innerHTML = `<span class="swatch"></span>${name}`;
+    b.addEventListener('click', () => {
+      state.teaching = state.teaching === name ? null : name;
+      playTone(freqOf(name)); // preview the pitch
+      updateColorUI();
+    });
+    return b;
+  }));
+  updateColorUI();
+}
+
+function updateColorUI() {
+  for (const b of els.colorButtons.children) {
+    b.querySelector('.swatch').style.background = `rgb(${state.palette[b.dataset.color].join(',')})`;
+    b.classList.toggle('active', b.dataset.color === state.teaching);
+  }
+  els.colorMsg.textContent = state.teaching
+    ? `Click the ${state.teaching} note in the camera view.`
+    : 'Pick a colour, then click that note in the camera view to teach it. Click a colour to hear its pitch.';
+}
+
+function teachColor(p) {
+  feedCtx.save();
+  const hit = state.lastDetect?.notes.find((n) => {
+    poly(feedCtx, n.corners);
+    return feedCtx.isPointInPath(p[0], p[1]);
+  });
+  feedCtx.restore();
+  if (!hit) {
+    els.colorMsg.textContent = `No detected note there. Click inside a yellow outline (${state.teaching}).`;
+    return;
+  }
+  state.palette[state.teaching] = hit.rgb;
+  savePalette(state.palette);
+  state.teaching = null;
+  updateColorUI();
+}
+
+$('resetColors').addEventListener('click', () => {
+  state.palette = { ...DEFAULT_PALETTE };
+  savePalette(null);
+  updateColorUI();
+});
+
+// Browsers only allow audio after a user gesture on this page.
+window.addEventListener('pointerdown', unlock);
+window.addEventListener('keydown', unlock);
+
 // ---------------------------------------------------------------- boot
 
 async function boot() {
   buildSliders();
+  buildColorButtons();
   requestAnimationFrame(draw);
   const id = await refreshCameraList();
   await selectCamera(id);

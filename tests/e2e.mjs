@@ -126,11 +126,15 @@ try {
     const s = window.stickyWall.state;
     const c = (pts) => [pts.reduce((a, p) => a + p[0], 0) / 4, pts.reduce((a, p) => a + p[1], 0) / 4];
     const gt = s.sim.groundTruth();
-    const errs = gt.map((g) => Math.min(...s.proj.notes.map((n) => Math.hypot(c(n.corners)[0] - g.center[0], c(n.corners)[1] - g.center[1]))));
-    return { gt: gt.length, found: s.proj.notes.length, worst: Math.max(...errs) };
+    const dist = (n, g) => Math.hypot(c(n.corners)[0] - g.center[0], c(n.corners)[1] - g.center[1]);
+    const errs = gt.map((g) => Math.min(...s.proj.notes.map((n) => dist(n, g))));
+    const nearest = (g) => s.proj.notes.reduce((a, n) => (dist(n, g) < dist(a, g) ? n : a));
+    const wrongColor = gt.filter((g) => nearest(g).color !== g.color).map((g) => `${g.color}->${nearest(g).color}`);
+    return { gt: gt.length, found: s.proj.notes.length, worst: Math.max(...errs), wrongColor };
   });
   check(det.found === det.gt, `found ${det.found}/${det.gt} notes (note outside projection ignored)`);
   check(det.worst < 0.01, `note centre error ${(det.worst * 100).toFixed(2)}% (< 1%)`);
+  check(det.wrongColor.length === 0, `note colours recognised (${det.wrongColor.join(', ') || 'all correct'})`);
   const projNotes = await proj.evaluate(() => window.stickyWall.physics.notes.size);
   check(projNotes === det.gt, `projector built ${projNotes} static note bodies`);
 

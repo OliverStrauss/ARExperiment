@@ -130,7 +130,7 @@ export class Detector {
           if (reason) {
             if (rejected.length < 50) rejected.push({ corners, reason });
           } else {
-            notes.push({ corners, area: area / (scale * scale), rectangularity });
+            notes.push({ corners, area: area / (scale * scale), rectangularity, rgb: this._meanRgb(rgb, contours, hierarchy, i, c) });
           }
         } finally {
           c.delete();
@@ -140,6 +140,21 @@ export class Detector {
       return { notes, rejected, ms: performance.now() - t0, procSize: [pw, ph] };
     } finally {
       mats.forEach((m) => m.delete());
+    }
+  }
+
+  // Average colour [r, g, b] of the pixels inside contour i.
+  _meanRgb(rgb, contours, hierarchy, i, contour) {
+    const cv = this.cv;
+    const rect = cv.boundingRect(contour);
+    const roi = rgb.roi(rect);
+    const m = cv.Mat.zeros(rect.height, rect.width, cv.CV_8UC1);
+    try {
+      cv.drawContours(m, contours, i, new cv.Scalar(255), -1, cv.LINE_8, hierarchy, 0, new cv.Point(-rect.x, -rect.y));
+      return cv.mean(roi, m).slice(0, 3).map(Math.round);
+    } finally {
+      roi.delete();
+      m.delete();
     }
   }
 
