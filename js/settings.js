@@ -10,8 +10,8 @@ const PALETTE_KEY = 'sticky-wall.palette.v1';
 // Areas are a percentage of the camera frame so they survive resolution changes.
 export const SLIDERS = [
   { key: 'bpm', group: 'Beat', label: 'Tempo BPM', min: 30, max: 240, step: 1, def: 96 },
-  { key: 'railBottom', group: 'Beat', label: 'Rail height', min: 0.05, max: 0.4, step: 0.005, def: 0.15 },
-  { key: 'unit', group: 'Beat', label: 'Distance per 1/16', min: 0.02, max: 0.25, step: 0.005, def: 0.1 },
+  { key: 'unit', group: 'Beat', label: 'Pair gap per 1/8', min: 0.02, max: 0.25, step: 0.005, def: 0.1 },
+  { key: 'barH', group: 'Beat', label: 'Lone fall per bar (wall heights)', min: 0.25, max: 2, step: 0.05, def: 1 },
   { key: 'echoBars', group: 'Beat', label: 'Echo bars', min: 1, max: 8, step: 1, def: 4 },
   { key: 'maxBallsPerLane', group: 'Beat', label: 'Max balls per lane', min: 1, max: 8, step: 1, def: 4 },
   { key: 'hMin', group: 'HSV threshold', label: 'Hue min', min: 0, max: 179, step: 1, def: 0 },
@@ -40,7 +40,7 @@ export const DEFAULTS = {
   ...Object.fromEntries(SLIDERS.map((s) => [s.key, s.def])),
   deviceId: '',
   roiOnly: true, // only detect inside the calibrated projection area
-  snap: true, // round lane lengths to whole 16ths
+  snap: true, // round pair gaps to whole 1/8s
   outlines: false, // faint note outlines on the projector (debug)
 };
 

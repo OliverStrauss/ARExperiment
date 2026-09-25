@@ -20,9 +20,9 @@ python3 -m http.server 8000  # python3 ships with macOS
    press **Fullscreen** (or `F`).
 3. Pick your USB webcam in the **Camera** dropdown.
 4. **Calibrate**: click the 4 numbered dots in the camera view, then **Done**.
-5. Stick a note in the **rail** (the dashed band at the top of the wall) and
-   another note below it. Press **Space** to start the clock: a ball bounces
-   between the two in time, and the lower note plays. See *How to play*.
+5. Stick a note on the wall and press **Space** to start the clock: a ball
+   drops onto it from the top of the wall and climbs back. Stick a second note above it and the
+   ball ping-pongs between the two. See *How to play*.
 
 `getUserMedia` needs `localhost` (or https); opening the files with `file://`
 will not work. Both windows must come from the same address so they can talk.
@@ -77,11 +77,11 @@ projectors and rooms differ. Go through it stage by stage.
 - [ ] Adding a note takes ~1 s to register; removing one ~2 s (see *Tracking*).
 
 **4. Beat**
-- [ ] A note in the rail opens a lane (a faint band) straight down from it.
-- [ ] The first note below it in the lane gets a tag (`E4 · BELL`); the ball
-      bounces between the two and every hit flashes a halo and plays.
-- [ ] Moving the target note further down makes the lane slower (the rate
-      label next to the rail note changes: 1/8 → 1/4 → 3/8 …).
+- [ ] A lone note gets a tag (`E4 · BELL`) and a ball dropping onto it from
+      the top of the wall; every hit flashes a halo and plays.
+- [ ] A second note straight above it pairs up: the ball ping-pongs and both
+      notes play. Moving them apart makes it slower (the rate label at the top
+      of the lane changes: 1/8 → 1/4 → 3/8 …).
 - [ ] While playing, balls and halos never become notes (watch "Notes: N in
       play"). If they do, raise **Ball mask → Radius multiplier** or
       **Camera lag**.
@@ -92,28 +92,35 @@ projectors and rooms differ. Go through it stage by stage.
 
 The wall is the instrument; the laptop only watches (and keeps loops).
 
-- **Rail = where balls come from.** The dashed band at the top of the wall is
-  the rail. A note whose centre is in the rail opens a **lane** straight down
-  from it. Rail notes never make a sound. Any number of lanes.
-- **Target = what plays.** The first note below the rail note that crosses the
-  lane's centre line is its target. Notes further down the same lane are
-  blocked (the Lanes panel counts them).
+- **Every note gets a ball.** A lone note's ball drops from the top of the
+  wall and climbs back. The ruler lines on the wall show the fall time, 1/8
+  to 1 bar (*Lone fall per bar* sets the spacing); with Snap on it rounds to
+  the nearest line. All balls leave the top on the downbeat, so only notes at
+  the same height hit together; lower notes hit later and less often.
+- **Pairs ping-pong.** A note below another one that crosses the upper note's
+  centre line pairs with it: the ball bounces between them and both play.
+  Stacks of 3+ chain into pairs top to bottom.
 - **Colour = pitch.** purple C4 · blue D4 · green E4 · yellow G4 · orange A4 ·
   red C5 (pentatonic, so any mix sounds fine).
-- **Drop distance = rhythm.** Each ruler line below the rail is one more 16th
-  note between hits: a target 4 lines down hits every 1/4 note. With **Snap**
-  on (default) lengths round to whole 16ths; off gives free rhythms.
-- **More balls = more hits.** **B** drops another ball into the highlighted
-  lane *now*; balls dropped at different moments make syncopation.
+- **Pair gap = rhythm.** Each *Pair gap per 1/8* of distance between the two
+  notes is one more 1/8 note between hits: 2 units apart hits every 1/4 note.
+  With **Snap** on (default) gaps round to whole 1/8s; off gives free rhythms.
+- **More balls = more hits.** **B** adds a ball to the highlighted lane and
+  spreads the lane's balls evenly over its cycle: a lane of quarter notes plays
+  8ths with 2 balls, triplets with 3 and 16ths with 4.
 - **Instruments.** Click a note on the wall (mouse on the projector window) or
   press **E** for the highlighted lane's target: a ring of instruments appears
   around it. **← →** spin, **↵** or a second click keeps, **Esc** cancels; it
   keeps the choice by itself after 4 s. Or pick it in the Lanes panel.
   bell · pluck · marimba · pad · bass · kick · tom, all at the note's pitch.
+  Moving a note keeps its instrument (a note of the same colour placed within
+  10 s of one taken down takes over its instrument).
 - **Echo + Keep.** The strip at the bottom shows what the wall played in the
   last 4 bars. **K** keeps it as a loop that plays forever, even after you take
   the notes down, so you can build a beat in layers. **Z** undoes the last
-  keep, **X** clears them all.
+  keep, **X** clears them all. Kept notes you take down stay on the wall as
+  dashed outlines with dim balls replaying the loop; the outline flashes on
+  each hit.
 
 ### Keys (either window)
 
@@ -122,7 +129,7 @@ The wall is the instrument; the laptop only watches (and keeps loops).
 | Space | Start / stop the clock |
 | [ / ] | Tempo −/+ 2 BPM (hold ⇧ for ±10) |
 | S | Snap on / off |
-| Tab / ⇧Tab | Highlight next / previous lane (white box around its rail note) |
+| Tab / ⇧Tab | Highlight next / previous lane (white box around its note, a pair's upper note) |
 | B / ⇧B | Add / remove a ball in the highlighted lane |
 | A / D | Nudge the highlighted lane left / right |
 | E | Instrument ring on the highlighted lane's target |
@@ -142,9 +149,9 @@ Everything can also be set from the laptop:
 | | |
 |---|---|
 | Top bar | Start/Stop, tempo −/+, Snap, Outlines (faint note outlines on the wall, for debugging) |
-| Lanes | One row per lane: target pitch, instrument, rate, balls (−/+), blocked notes. Click a row to highlight the lane. Mute / solo buttons per pitch, Reset balls, Keys on wall. |
+| Lanes | One row per lane: target pitch, instrument, rate, balls (−/+), upper note (or lone). Click a row to highlight the lane. Mute / solo buttons per pitch, Reset balls, Keys on wall. |
 | Echo | The last bars, one row per pitch (kept hits solid, live hits outlined). Keep / Clear kept / Undo keep. |
-| Settings → Beat | Tempo, rail height, distance per 1/16, echo bars, max balls per lane. |
+| Settings → Beat | Tempo, pair gap per 1/8, lone bounce height, echo bars, max balls per lane. |
 | Calibrate, Crosshair test, Freeze notes, Only detect inside the projected area | Setup, as before. |
 
 Sound plays from the **control window** (browsers only allow audio after a
@@ -161,8 +168,8 @@ The feed labels each note with its colour. *Defaults* forgets taught colours.
 | Group | Setting | Notes |
 |---|---|---|
 | Beat | Tempo | BPM (also [ ] keys). |
-| | Rail height | Bottom of the rail band, as a fraction of the projector height. |
-| | Distance per 1/16 | How far below the rail each extra 16th note is (projector heights). Lower it for a small wall. |
+| | Pair gap per 1/8 | Distance between paired notes per 1/8 note between hits (projector heights). Lower it for a small wall. |
+| | Lone fall per bar | How far a lone ball falls in one bar (wall heights); spaces the ruler lines. |
 | | Echo bars, max balls per lane | Length of the echo / kept loops (4/4 bars); ball limit per lane. |
 | HSV threshold | Hue / Sat / Val min & max | OpenCV ranges: H 0-179, S/V 0-255. Saturation is the key one: notes are saturated, the wall and the projected white light are not. |
 | Mask cleanup | Morph kernel | Opening removes specks, closing fills holes. |
@@ -178,7 +185,7 @@ The feed labels each note with its colour. *Defaults* forgets taught colours.
 
 ```
 control.html (laptop)                                      projector.html (fullscreen)
- webcam ─► Detector (3 Hz) ─► NoteTracker ─► notes ───────► draws rail, lanes, balls,
+ webcam ─► Detector (3 Hz) ─► NoteTracker ─► notes ───────► draws lanes, balls,
    HSV threshold → blank ball/halo capsules      │           halos, ring, echo, toasts
    → open/close → contours → shape filter        ▼           from the shared clock
    → homography                          buildLanes()             │
@@ -198,8 +205,8 @@ control.html (laptop)                                      projector.html (fulls
 - **Tracking** (`js/tracker.js`): nearest-centre matching with add/remove
   hysteresis, corner smoothing and a small deadband. Lanes only ever rebuild
   from tracked notes, so hands and people in front of the wall don't matter.
-- **Lanes** (`js/lanes.js`): rail notes, targets, shadowed notes and the
-  length of each lane in 16ths.
+- **Lanes** (`js/lanes.js`): lone notes and stacked pairs, and the cycle of
+  each lane in 16ths.
 - **Beat** (`js/beat.js`): musical time is counted in 16ths on a clock that
   re-anchors on tempo changes. A ball is just the phase at which it hits, so
   its position is a formula: no physics. Every 25 ms the scheduler finds the
@@ -228,7 +235,7 @@ js/vision.js       OpenCV pipeline
 js/calibration.js  calibration + click-snapping
 js/homography.js   pure-JS 3x3 homography maths
 js/tracker.js      note tracking / anti-flicker
-js/lanes.js        rail notes -> lanes, targets, rhythm
+js/lanes.js        notes -> lone / paired lanes, rhythm
 js/beat.js         clock, balls, look-ahead scheduler, echo + layers
 js/ring.js         instrument ring state
 js/keys.js         keymap shared by both windows
@@ -254,7 +261,7 @@ node tests/e2e.mjs           # headless browser run on the simulated wall
 
 The end-to-end test calibrates with deliberately sloppy clicks, then checks
 the notes it finds against the simulator's ground truth, drags and removes
-notes. Then it builds a wall with one rail note and a target 4 × unit below,
+notes. Then it builds a wall with a pair 2 × unit apart and a lone note,
 starts the clock from the projector window and checks the halos arrive every
 625 ms at 96 BPM (±8 ms), that **B** doubles the hits, that balls and halos
 are never detected as notes, that clicking the target and spinning the ring
@@ -273,6 +280,6 @@ after the target is taken down. Screenshots are saved in `tests/out/`.
 | Detection is slow (> 100 ms) | Lower *Process width* to 640 or 480. |
 | Notes far away aren't picked up (tiny white dots in the mask) | Lower *Min area* (0.01), raise *Process width* (1280), lower *Morph kernel* (3). Also check *Freeze notes* is off. |
 | Beige/wood wall shows up in the mask | Narrow *Hue min/max* to your note colour, e.g. green notes 35-85, yellow 20-35, pink 150-175. |
-| A lane doesn't open | Its note's centre must be inside the dashed rail. Raise *Rail height* if your notes are big. |
-| Lanes are too slow / the wall is too small | Lower *Distance per 1/16*. |
+| Two notes don't pair | The lower note must cross the upper note's centre line. Nudge with A / D. |
+| Pairs are too slow / the wall is too small | Lower *Pair gap per 1/8*. |
 | Arrow keys do nothing | They only spin the instrument ring (click a note or press E first). |

@@ -8,11 +8,11 @@ import { cvReady } from './cvload.js';
 import { Detector } from './vision.js';
 import { NOTE_COLORS, DEFAULT_PALETTE, classifyColor, freqOf, pitchOf } from './colors.js';
 import { unlock, soundReady, playTone, playNote } from './sound.js';
-import { buildLanes, rateLabel, noteAt } from './lanes.js';
+import { buildLanes, rateLabel, noteAt, oneWay } from './lanes.js';
 import { InstrumentRing } from './ring.js';
 import { INSTRUMENTS } from './instruments.js';
-import { BeatEngine, epochNow, clockPos, ballY } from './beat.js';
-import { ballRadiusN, ballGapN, refScale, inflate, HALO_MS, HALO_MASK, BALL_R, BALL_GAP } from './render.js';
+import { BeatEngine, epochNow, clockPos, ballY, ghostPos } from './beat.js';
+import { ballRadiusN, ballGapN, refScale, inflate, HALO_MS, HALO_MASK, BALL_R, BALL_GAP, gridLevel } from './render.js';
 import { keyAction } from './keys.js';
 
 const $ = (id) => document.getElementById(id);
@@ -64,7 +64,8 @@ const state = {
   teaching: null, // colour name waiting for a click on a note in the feed
   // Beat UI state owned by this window (the projector only draws it).
   highlight: null, // highlighted lane id
-  offsets: {}, // { railNoteId: dx } lane nudges (A / D)
+  focus: null, // selected note id in that lane (a pair has two: Tab visits both)
+  offsets: {}, // { laneId: dx } lane nudges (A / D)
   overlay: false, // ? key overlay on the wall
   halos: [], // [{ noteId, color, at }] hits in flight (drawn + masked out of detection)
   hitLog: [], // recent hits (tests / debugging)
@@ -124,20 +125,25 @@ function onMessage(msg) {
 
 function laneOptions() {
   const s = state.settings;
-  return { railBottom: s.railBottom, unit: s.unit, snap: engine.snap, offsets: state.offsets };
+  return { unit: s.unit, barH: s.barH, snap: engine.snap, offsets: state.offsets };
 }
 
 function rebuildLanes() {
   const lanes = buildLanes(state.proj.notes, laneOptions());
   engine.setLanes(lanes);
-  engine.pruneInstruments(state.proj.notes.map((n) => n.id));
+  engine.syncNotes(state.proj.notes, epochNow());
   if (ring.isOpen && !state.proj.notes.some((n) => n.id === ring.noteId)) {
     ring.cancel();
     sendRing();
   }
   const ids = lanes.map((l) => l.id);
   for (const id of Object.keys(state.offsets)) if (!ids.includes(Number(id))) delete state.offsets[id];
-  if (!ids.includes(state.highlight)) state.highlight = ids[0] ?? null;
+  const all = stops();
+  if (!all.some((t) => t.laneId === state.highlight && t.noteId === state.focus)) {
+    const t = all.find((t) => t.laneId === state.highlight) ?? all[0];
+    state.highlight = t?.laneId ?? null;
+    state.focus = t?.noteId ?? null;
+  }
   sendBeat();
 }
 
@@ -147,23 +153,15 @@ function beatPayload() {
     clock: engine.clock(),
     bpm: engine.bpm,
     snap: engine.snap,
-    railBottom: s.railBottom,
-    unit: s.unit,
+    barH: s.barH,
     lanes: engine.lanes.map((l) => ({
-      id: l.id,
-      x: l.x,
-      w: l.w,
-      top: l.top,
-      d: l.d,
-      n: l.n,
-      targetId: l.targetId,
-      color: l.color,
-      railNoteBottom: l.railNoteBottom,
-      shadowed: l.shadowed,
-      instrument: l.targetId == null ? null : engine.instrumentOf(l.targetId),
+      ...l,
       balls: engine.ballsOf(l.id).map((b) => ({ id: b.id, phase: b.phase })),
     })),
+    instruments: Object.fromEntries(state.proj.notes.map((n) => [n.id, engine.instrumentOf(n.id)])),
+    ghosts: engine.layers.map((l) => l.ghost).filter(Boolean),
     highlight: state.highlight,
+    focus: state.focus,
     mutes: [...engine.mutes],
     solo: engine.solo,
     overlay: state.overlay,
@@ -218,6 +216,12 @@ function laneIndex(id) {
   return engine.lanes.findIndex((l) => l.id === id);
 }
 
+// Tab stops: every note, lane by lane, a pair's upper note before its target.
+// The middle note of a 3-stack is a stop in both of its lanes.
+function stops() {
+  return engine.lanes.flatMap((l) => (l.upperId == null ? [l.targetId] : [l.upperId, l.targetId]).map((noteId) => ({ laneId: l.id, noteId })));
+}
+
 function laneName(id) {
   return `Lane ${laneIndex(id) + 1}`;
 }
@@ -252,18 +256,20 @@ function runAction(a) {
       toast(a.cap, `Snap ${engine.snap ? 'on' : 'off'}`);
       break;
     case 'lane': {
-      const n = engine.lanes.length;
-      if (!n) return toast(a.cap, 'No lanes: put a note in the rail');
-      const i = laneIndex(state.highlight);
-      state.highlight = engine.lanes[(((i < 0 ? 0 : i + a.arg) % n) + n) % n].id;
+      const all = stops();
+      const n = all.length;
+      if (!n) return toast(a.cap, 'No lanes: put a note on the wall');
+      const i = all.findIndex((t) => t.laneId === state.highlight && t.noteId === state.focus);
+      ({ laneId: state.highlight, noteId: state.focus } = all[(((i < 0 ? 0 : i + a.arg) % n) + n) % n]);
       const l = engine.lane(state.highlight);
-      toast(a.cap, `${laneName(l.id)} · ${l.n == null ? 'no target' : `${pitchOf(l.color) ?? '?'} · ${rateLabel(l.n, engine.snap)}`}`);
+      const where = l.upperId == null ? '' : state.focus === l.upperId ? ' top' : ' bottom';
+      toast(a.cap, `${laneName(l.id)}${where} · ${noteLabel(state.focus)} · ${engine.instrumentOf(state.focus)} · ${rateLabel(oneWay(l), engine.snap)}`);
       break;
     }
     case 'addBall':
     case 'removeBall': {
       if (!lane) return toast(a.cap, 'No lane highlighted');
-      const ok = a.action === 'addBall' ? engine.addBall(lane.id, now) : engine.removeBall(lane.id);
+      const ok = a.action === 'addBall' ? engine.addBall(lane.id) : engine.removeBall(lane.id);
       const count = engine.ballsOf(lane.id).length;
       toast(a.cap, ok ? `${laneName(lane.id)} → ${count} ball${count > 1 ? 's' : ''}` : `${laneName(lane.id)} has ${count} (${a.action === 'addBall' ? 'max' : 'min'})`);
       break;
@@ -285,8 +291,8 @@ function runAction(a) {
       toast(a.cap, 'Balls reset: 1 per lane');
       break;
     case 'openRing': {
-      if (!lane?.targetId) return toast(a.cap, lane ? `${laneName(lane.id)} has no target` : 'No lane highlighted');
-      openRing(lane.targetId, a.cap);
+      if (!lane) return toast(a.cap, 'No lane highlighted');
+      openRing(state.focus ?? lane.targetId, a.cap);
       break;
     }
     case 'spin': {
@@ -313,6 +319,7 @@ function runAction(a) {
       break;
     case 'keep': {
       const layer = engine.keep();
+      if (layer) layer.ghost = ghostOf(layer);
       const n = engine.layers.length;
       toast(a.cap, layer ? `Kept ${engine.o.echoBars} bar${engine.o.echoBars > 1 ? 's' : ''} · ${n} layer${n > 1 ? 's' : ''}` : 'Nothing to keep yet');
       sendEcho();
@@ -336,6 +343,33 @@ function runAction(a) {
       return;
   }
   sendBeat();
+}
+
+// Snapshot of the notes and balls a kept layer came from, so the wall keeps
+// showing them (dim) after the notes are taken down.
+function ghostOf(layer) {
+  const ids = new Set(layer.events.map((e) => e.noteId));
+  const lanes = engine.lanes.filter((l) => ids.has(l.targetId) || ids.has(l.upperId));
+  const used = new Set(lanes.flatMap((l) => [l.targetId, l.upperId]));
+  return {
+    from: engine.horizon - layer.L,
+    L: layer.L,
+    notes: state.proj.notes.filter((n) => used.has(n.id)).map((n) => ({ id: n.id, corners: n.corners, color: n.color })),
+    lanes: lanes.map((l) => ({ ...l, balls: engine.ballsOf(l.id).map((b) => ({ id: b.id, phase: b.phase })) })),
+  };
+}
+
+// Lanes drawn on the wall with the pos their balls follow: live lanes, then
+// ghost lanes of kept layers whose notes are gone.
+function drawnLanes() {
+  const live = new Set(state.proj.notes.map((n) => n.id));
+  const out = engine.lanes.map((lane) => ({ lane, balls: engine.ballsOf(lane.id), at: (p) => p }));
+  for (const { ghost } of engine.layers) {
+    for (const lane of ghost?.lanes || []) {
+      if (!live.has(lane.targetId)) out.push({ lane, balls: lane.balls, at: (p) => ghostPos(ghost, p) });
+    }
+  }
+  return out;
 }
 
 function noteColor(noteId) {
@@ -362,13 +396,13 @@ function openRing(noteId, cap) {
 }
 
 // A click on the wall (projector window): a second click keeps the ring's
-// choice, a click on a note opens the ring on it. Rail notes can't be clicked.
+// choice, a click on a note opens the ring on it.
 function clickWall(pt) {
   if (ring.isOpen) {
     runAction({ action: 'ringCommit', cap: 'Click' });
     return;
   }
-  const note = noteAt(state.proj.notes, pt, state.settings.railBottom);
+  const note = noteAt(state.proj.notes, pt);
   if (note) openRing(note.id, 'Click');
 }
 
@@ -424,10 +458,12 @@ function drawEchoPanel() {
   const bars = echo?.bars ?? engine.o.echoBars;
   const steps = bars * 16;
   const xOf = (step) => LEFT + ((step + 0.5) / steps) * (W - LEFT - 8);
-  c.fillStyle = 'rgba(255,255,255,0.05)';
-  for (let st = 0; st < steps; st += 4) c.fillRect(Math.round(xOf(st - 0.5)), TOP, 1, hgt - 2 * TOP);
-  c.fillStyle = 'rgba(255,255,255,0.2)';
-  for (let bar = 0; bar <= bars; bar++) c.fillRect(Math.round(xOf(bar * 16 - 0.5)), TOP, 1, hgt - 2 * TOP);
+  // grid like a score: bars, quarters, 8ths, 16ths (see render.js gridLevel)
+  for (let st = 0; st <= steps; st++) {
+    const g = gridLevel(st);
+    c.fillStyle = `rgba(255,255,255,${[0.03, 0.07, 0.14, 0.35][g]})`;
+    c.fillRect(Math.round(xOf(st - 0.5)), TOP, g === 3 ? 2 : 1, hgt - 2 * TOP);
+  }
   c.font = '12px ui-monospace, Menlo, monospace';
   c.textBaseline = 'middle';
   if (!rows.length) {
@@ -465,55 +501,56 @@ function drawEchoPanel() {
   }
 }
 
-// Lanes panel: one row per lane; click a row to highlight it. The instrument
-// and ball count can be set here too, so the laptop alone can configure all.
+// Lanes panel: one row per note (a pair's upper note, then its target), the
+// lane columns spanning both. Click a row to select that note. Instruments
+// and ball counts can be set here too, so the laptop alone can configure all.
 let lanesSig = '';
 function renderLanes() {
   const tbody = $('lanesTable').tBodies[0];
+  const note = (id, color) => ({ id, color, pitch: pitchOf(color) ?? '?', instrument: engine.instrumentOf(id), muted: !engine.audible(color) });
   const rows = engine.lanes.map((l, i) => ({
     id: l.id,
     num: i + 1,
-    color: l.color,
-    targetId: l.targetId,
-    pitch: l.targetId == null ? null : pitchOf(l.color) ?? '?',
-    instrument: l.targetId == null ? null : engine.instrumentOf(l.targetId),
-    rate: l.n == null ? '—' : rateLabel(l.n, engine.snap),
+    notes: [...(l.upperId == null ? [] : [note(l.upperId, l.upperColor)]), note(l.targetId, l.color)],
+    rate: rateLabel(oneWay(l), engine.snap),
     balls: engine.ballsOf(l.id).length,
-    blocked: l.shadowed.length,
     hi: l.id === state.highlight,
-    muted: l.targetId != null && !engine.audible(l.color),
+    focus: state.focus,
   }));
   const sig = JSON.stringify(rows);
   // don't rebuild under an open dropdown
   if (sig === lanesSig || tbody.contains(document.activeElement)) return;
   lanesSig = sig;
   $('lanesEmpty').hidden = rows.length > 0;
-  $('lanesInfo').textContent = rows.length ? `${rows.length} lane${rows.length > 1 ? 's' : ''} · Tab / click to highlight` : '';
-  tbody.replaceChildren(...rows.map((r) => {
+  $('lanesInfo').textContent = rows.length ? `${rows.length} lane${rows.length > 1 ? 's' : ''} · Tab / click to select a note` : '';
+  tbody.replaceChildren(...rows.flatMap((r) => r.notes.map((n, j) => {
     const tr = document.createElement('tr');
-    tr.className = `lane${r.hi ? ' hi' : ''}`;
-    const swatch = r.color ? `<span class="swatch" style="background:rgb(${state.palette[r.color].join(',')})"></span>` : '';
-    const target = r.targetId == null ? '<td class="idle">no target</td>' : `<td>${swatch}${r.pitch}${r.muted ? ' <span class="muted">muted</span>' : ''}</td>`;
-    const inst = r.targetId == null ? '<td class="idle">—</td>'
-      : `<td><select title="Instrument of this lane's target note">${INSTRUMENTS.map((x) => `<option${x === r.instrument ? ' selected' : ''}>${x}</option>`).join('')}</select></td>`;
-    tr.innerHTML = `<td>${r.num}</td>${target}${inst}<td>${r.rate}</td>
-      <td><button data-d="-1" title="Remove a ball (⇧B)">−</button> ${r.balls} <button data-d="1" title="Add a ball (B)">+</button></td>
-      <td class="${r.blocked ? '' : 'idle'}">${r.blocked || '—'}</td>`;
+    tr.className = `lane${r.hi && n.id === r.focus ? ' hi' : ''}${j ? ' sub' : ''}`;
+    const span = r.notes.length;
+    const swatch = n.color ? `<span class="swatch" style="background:rgb(${state.palette[n.color].join(',')})"></span>` : '';
+    const role = span > 1 ? `<span class="muted">${j ? 'bottom' : 'top'}</span> ` : '';
+    const target = `<td>${role}${swatch}${n.pitch}${n.muted ? ' <span class="muted">muted</span>' : ''}</td>`;
+    const inst = `<td><select title="Instrument of this note">${INSTRUMENTS.map((x) => `<option${x === n.instrument ? ' selected' : ''}>${x}</option>`).join('')}</select></td>`;
+    tr.innerHTML = j
+      ? `${target}${inst}`
+      : `<td rowspan="${span}">${r.num}</td>${target}${inst}<td rowspan="${span}">${r.rate}</td>
+      <td rowspan="${span}"><button data-d="-1" title="Remove a ball (⇧B)">−</button> ${r.balls} <button data-d="1" title="Add a ball (B)">+</button></td>`;
     tr.addEventListener('click', (e) => {
       if (e.target.closest('select')) return;
       state.highlight = r.id;
+      state.focus = n.id;
       const d = Number(e.target.dataset?.d);
       if (d) runAction({ action: d > 0 ? 'addBall' : 'removeBall', cap: d > 0 ? 'B' : '⇧B' });
       else sendBeat();
     });
-    tr.querySelector('select')?.addEventListener('change', (e) => {
-      engine.setInstrument(r.targetId, e.target.value);
-      previewInstrument(r.targetId, e.target.value);
+    tr.querySelector('select').addEventListener('change', (e) => {
+      engine.setInstrument(n.id, e.target.value);
+      previewInstrument(n.id, e.target.value);
       e.target.blur();
       sendBeat();
     });
     return tr;
-  }));
+  })));
 }
 
 function buildPitchButtons() {
@@ -956,19 +993,19 @@ function ballCapsules(now = epochNow()) {
   const R = BALL_R * refScale(w, h) * s.ballPad;
   const clock = engine.clock();
   const out = [];
-  for (const lane of engine.lanes) {
-    for (const ball of engine.ballsOf(lane.id)) {
+  for (const { lane, balls, at } of drawnLanes()) {
+    for (const ball of balls) {
       let lo = Infinity;
       let hi = -Infinity;
       const span = s.ballLag + 0.05;
       for (let i = 0; i <= 24; i++) {
-        const y = ballY(lane, ball.phase, clockPos(clock, now - s.ballLag + (span * i) / 24), s.railBottom, rN, gN);
+        const y = ballY(lane, ball.phase, at(clockPos(clock, now - s.ballLag + (span * i) / 24)), rN, gN);
         lo = Math.min(lo, y);
         hi = Math.max(hi, y);
       }
       const clear = (BALL_GAP * refScale(w, h) + R) / h; // capsule end -> paper
-      lo = Math.max(lo, lane.railNoteBottom + clear);
-      if (lane.top != null) hi = Math.min(hi, lane.top - clear);
+      if (lane.upperId != null) lo = Math.max(lo, lane.ceil + clear);
+      hi = Math.min(hi, lane.top - clear);
       hi = Math.max(hi, lo);
       out.push({ a: [lane.x * w, lo * h], b: [lane.x * w, hi * h], r: R });
     }

@@ -5,9 +5,9 @@
 // A tempo change re-anchors the clock at the current pos, so everything stays
 // continuous and all lanes speed up or slow down together.
 //
-// A ball in a lane of length n (16ths, see lanes.js) is defined by its phase:
+// A ball in a lane with cycle n (16ths, see lanes.js) is defined by its phase:
 // the pos at which it hits the target. It hits at phase + k*n and is back at
-// the rail halfway between hits. Its position is analytic (ballProgress), so
+// the top halfway between (where a pair's upper note is hit too). Its position is analytic (ballProgress), so
 // the projector draws it from the same clock without any physics.
 //
 // Times passed in (`now`) are seconds on a clock shared by both windows:
@@ -44,26 +44,43 @@ export function clockPos(clock, now) {
   return clock.running ? clock.pos0 + ((now - clock.anchor) * clock.bpm) / 15 : clock.pos0;
 }
 
-/** 0 at the rail, 1 when touching the target. Hits when pos = phase (mod n). */
+/** 0 at the top, 1 when touching the target. Hits when pos = phase (mod n). */
 export function ballProgress(pos, phase, n) {
   const u = ((((pos - phase) / n + 0.5) % 1) + 1) % 1;
   return 1 - Math.abs(1 - 2 * u);
 }
 
 /**
- * Normalized y of a ball's centre. It turns round just below the rail note
- * and just above the target's top edge on a hit, so it never lights the paper.
+ * Normalized y of a ball's centre. It turns round at the lane's ceiling (just
+ * below a pair's upper note) and just above the target's top edge on a hit,
+ * so it never lights the paper.
  * @param rN   ball radius as a fraction of the projector height
  * @param gapN gap left between the ball and both notes (same units)
  */
-export function ballY(lane, phase, pos, railBottom, rN, gapN = 0) {
-  const y0 = Math.max(railBottom, (lane.railNoteBottom ?? railBottom) + rN + gapN);
-  if (lane.n == null || lane.top == null) return y0;
+export function ballY(lane, phase, pos, rN, gapN = 0) {
+  const y0 = lane.upperId != null ? lane.ceil + rN + gapN : Math.max(rN, lane.ceil);
   const y1 = Math.max(y0, lane.top - rN - gapN);
   return y0 + (y1 - y0) * ballProgress(pos, phase, lane.n);
 }
 
+// A note that leaves the wall hands its instrument to a note of the same colour
+// that appears within this many seconds (picking a note up and moving it
+// gives it a new tracker id).
+export const MOVE_S = 10;
+
+/** A kept layer's snapshot pos for `pos`: replays the kept window in a loop. */
+export function ghostPos(ghost, pos) {
+  return ghost.from + ((((pos - ghost.from) % ghost.L) + ghost.L) % ghost.L);
+}
+
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+// A lone ball leaves the top of the wall on the downbeat, so it first hits
+// half a cycle later: notes at different heights hit at different times.
+// A pair's ball hits the lower note on the downbeat.
+export function startPhase(lane) {
+  return lane.upperId == null ? lane.n / 2 : 0;
+}
 
 export class BeatEngine {
   constructor(opts = {}) {
@@ -73,11 +90,15 @@ export class BeatEngine {
     this.running = false;
     this.anchor = 0; // s: when pos was pos0
     this.pos0 = 0;
+    this.base = 0; // pos where all lanes last started in step (see _ballsToTop)
     this.horizon = 0; // pos up to which hits have been scheduled
     this.lanes = []; // from buildLanes()
     this.balls = new Map(); // laneId -> [{ id, phase }] in the order added
     this.nextBall = 1;
     this.instruments = new Map(); // noteId -> instrument id
+    this.noteColors = new Map(); // noteId -> colour, as of the last syncNotes
+    this.firstSeen = new Map(); // noteId -> s
+    this.moved = []; // instruments of notes that left: [{ color, instrument, at }]
     this.mutes = new Set(); // colour names
     this.solo = null; // colour name or null
     this.echo = []; // live hits played: [{ pos, color, instrument, velocity, noteId }]
@@ -108,13 +129,25 @@ export class BeatEngine {
     this.anchor = now;
     this.running = true;
     this.horizon = this.pos0;
+    this._ballsToTop();
   }
 
   stop(now) {
     if (!this.running) return;
-    this.pos0 = this.pos(now);
+    this.pos0 = this.snap ? Math.ceil(this.pos(now)) : this.pos(now);
     this.anchor = now;
     this.running = false;
+    this._ballsToTop();
+  }
+
+  /** First ball of every lane back at the top at the current pos, so all lanes restart in step. */
+  _ballsToTop() {
+    this.base = this.pos0;
+    for (const l of this.lanes) {
+      const [first] = this.ballsOf(l.id);
+      if (first) first.phase = this.pos0 + l.n / 2;
+      this._space(l.id);
+    }
   }
 
   toggle(now) {
@@ -135,9 +168,17 @@ export class BeatEngine {
   /** Lanes from buildLanes(). New lanes get one ball; vanished lanes lose theirs. */
   setLanes(lanes) {
     const ids = new Set(lanes.map((l) => l.id));
+    const oldN = new Map(this.lanes.map((l) => [l.id, l.n]));
     for (const id of [...this.balls.keys()]) if (!ids.has(id)) this.balls.delete(id);
-    for (const l of lanes) if (!this.balls.has(l.id)) this.balls.set(l.id, [this._ball(0)]);
+    for (const l of lanes) {
+      const list = this.balls.get(l.id);
+      if (!list) this.balls.set(l.id, [this._ball(this.base + startPhase(l))]);
+      // cycle changed (note moved): back in step with the bar, else the old
+      // phase puts its hits on different steps than a new lane of this n
+      else if (oldN.has(l.id) && oldN.get(l.id) !== l.n) list[0].phase = this.base + startPhase(l);
+    }
     this.lanes = lanes;
+    for (const l of lanes) this._space(l.id);
   }
 
   lane(id) {
@@ -152,14 +193,24 @@ export class BeatEngine {
     return { id: this.nextBall++, phase };
   }
 
-  /** Drop a ball now: it leaves the rail now and hits n/2 later (on the grid with Snap). */
-  addBall(laneId, now) {
+  /**
+   * A lane's k balls spread evenly over its cycle, after the first ball:
+   * a lane of quarter notes plays 8ths with 2 balls, triplets with 3, 16ths with 4.
+   * Not snapped: 3 balls on a 4-16th cycle are off the 16th grid on purpose.
+   */
+  _space(laneId) {
+    const list = this.ballsOf(laneId);
+    const n = this.lane(laneId)?.n ?? 4;
+    list.forEach((b, i) => (b.phase = list[0].phase + (i * n) / list.length));
+  }
+
+  /** Add a ball; the lane's balls are respaced evenly (see _space). */
+  addBall(laneId) {
     const list = this.balls.get(laneId);
     if (!list || list.length >= this.o.maxBallsPerLane) return null;
-    const n = this.lane(laneId)?.n ?? 4;
-    const hit = this.pos(now) + n / 2;
-    const ball = this._ball(this.snap ? Math.round(hit) : hit);
+    const ball = this._ball(list[0].phase);
     list.push(ball);
+    this._space(laneId);
     return ball;
   }
 
@@ -168,12 +219,13 @@ export class BeatEngine {
     const list = this.balls.get(laneId);
     if (!list || list.length <= 1) return false;
     list.pop();
+    this._space(laneId);
     return true;
   }
 
-  /** One ball per lane, hitting on the downbeat. */
+  /** One ball per lane, back at its start (see startPhase). */
   resetBalls() {
-    for (const id of this.balls.keys()) this.balls.set(id, [this._ball(0)]);
+    for (const l of this.lanes) this.balls.set(l.id, [this._ball(this.base + startPhase(l))]);
   }
 
   // ---------------------------------------------------------------- instruments
@@ -186,10 +238,27 @@ export class BeatEngine {
     this.instruments.set(noteId, id);
   }
 
-  /** Forget instruments of notes that are no longer tracked. */
-  pruneInstruments(noteIds) {
-    const keep = new Set(noteIds);
-    for (const id of [...this.instruments.keys()]) if (!keep.has(id)) this.instruments.delete(id);
+  /**
+   * Tracked notes changed. Instruments of notes that left are held for
+   * MOVE_S s and go to a new note of the same colour (a moved note).
+   */
+  syncNotes(notes, now) {
+    const ids = new Set(notes.map((n) => n.id));
+    for (const [id, instrument] of this.instruments) {
+      if (ids.has(id)) continue;
+      this.instruments.delete(id);
+      const color = this.noteColors.get(id);
+      if (color) this.moved.push({ color, instrument, at: now });
+    }
+    for (const id of [...this.firstSeen.keys()]) if (!ids.has(id)) this.firstSeen.delete(id);
+    for (const n of notes) if (!this.firstSeen.has(n.id)) this.firstSeen.set(n.id, now);
+    this.moved = this.moved.filter((m) => now - m.at < MOVE_S);
+    for (const n of notes) {
+      if (this.instruments.has(n.id) || now - this.firstSeen.get(n.id) > MOVE_S) continue;
+      const i = this.moved.findLastIndex((m) => m.color === n.color);
+      if (i >= 0) this.instruments.set(n.id, this.moved.splice(i, 1)[0].instrument);
+    }
+    this.noteColors = new Map(notes.map((n) => [n.id, n.color]));
   }
 
   // ---------------------------------------------------------------- mute / solo
@@ -224,21 +293,27 @@ export class BeatEngine {
     if (to <= from) return [];
     const hits = [];
     for (const lane of this.lanes) {
-      if (lane.n == null || !this.audible(lane.color)) continue;
-      for (const ball of this.ballsOf(lane.id)) {
-        for (let p = ball.phase + Math.ceil((from - ball.phase) / lane.n) * lane.n; p < to; p += lane.n) {
-          if (p < from) continue;
-          hits.push({
-            time: this.timeAt(p),
-            pos: p,
-            laneId: lane.id,
-            ballId: ball.id,
-            noteId: lane.targetId,
-            color: lane.color,
-            instrument: this.instrumentOf(lane.targetId),
-            velocity: this.o.velocity,
-            kept: false,
-          });
+      // bottom hit at the phase; a pair's upper note half a cycle later
+      const strikes = [{ off: 0, noteId: lane.targetId, color: lane.color }];
+      if (lane.upperId != null) strikes.push({ off: lane.n / 2, noteId: lane.upperId, color: lane.upperColor });
+      for (const st of strikes) {
+        if (!this.audible(st.color)) continue;
+        for (const ball of this.ballsOf(lane.id)) {
+          const ph = ball.phase + st.off;
+          for (let p = ph + Math.ceil((from - ph) / lane.n) * lane.n; p < to; p += lane.n) {
+            if (p < from) continue;
+            hits.push({
+              time: this.timeAt(p),
+              pos: p,
+              laneId: lane.id,
+              ballId: ball.id,
+              noteId: st.noteId,
+              color: st.color,
+              instrument: this.instrumentOf(st.noteId),
+              velocity: this.o.velocity,
+              kept: false,
+            });
+          }
         }
       }
     }

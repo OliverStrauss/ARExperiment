@@ -50,7 +50,7 @@ export class Detector {
     const ch = track(new cv.MatVector());
     cv.split(diff, ch);
     const sum = track(new cv.Mat());
-    cv.add(ch.get(1), ch.get(2), sum); // |da| + |db|
+    cv.add(track(ch.get(1)), track(ch.get(2)), sum); // |da| + |db| (get() returns a new Mat: must be deleted)
     const out = track(new cv.Mat());
     cv.threshold(sum, out, thresh, 255, cv.THRESH_BINARY);
     return out;

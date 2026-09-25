@@ -1,22 +1,24 @@
 // Lanes from sticky notes (pure JS, no DOM).
 //
-// The top band of the projection (y < railBottom) is the *rail*. A note whose
-// centre is in the rail is a rail note: it never sounds, it opens a lane
-// straight down from it. The first non-rail note below that crosses the lane's
-// centre line is the lane's *target*; its distance below the rail sets the
-// rhythm (see beat.js). Notes further down the same lane are shadowed.
+// Every note gets a ball. A *lone* note's ball drops from the top of the wall
+// onto it and climbs back to the top, at a fixed speed (`barH` of wall height
+// per bar), so only notes at the same height hit together. The fall takes
+// 1/8 to 1 bar: the wall has a ruler line every 1/8 (see render.js). Two notes stacked so the lower one crosses the
+// upper one's centre line form a *pair*: the ball ping-pongs between them and
+// both notes play. The gap between them sets the rhythm (1/8 per `unit`).
+// Stacks of 3+ chain into pairs top to bottom.
 //
 // Everything is in projector-normalized coordinates (0..1).
 
 import { centroid } from './tracker.js';
 
 export const LANE_DEFAULTS = {
-  railBottom: 0.15, // bottom of the rail band
-  unit: 0.1, // normalized distance per 1/16 note
-  snap: true, // round the length to whole 16ths
+  unit: 0.1, // normalized gap per 1/8 note between pair hits
+  barH: 1, // lone balls fall this much of the wall height per bar
+  snap: true, // round pair gaps and lone falls to 1, 2, 4, 8 ... 1/8s (cycles divide the bar)
   minWidth: 0.0375, // lane width clamp: 2x ball diameter (30 px at 1600 wide)
-  minN: 0.25, // shortest un-snapped length, in 16ths
-  offsets: {}, // { railNoteId: dx } fine-tune nudges (A / D)
+  minN: 0.25, // shortest un-snapped gap, in 1/8s
+  offsets: {}, // { laneId: dx } fine-tune nudges (A / D)
 };
 
 // Where the vertical line at `x` crosses the polygon: [top y, bottom y], or null.
@@ -48,66 +50,81 @@ export function pointInPoly([x, y], poly) {
   return inside;
 }
 
-/** The non-rail note under a point (for clicks on the wall), or null. */
-export function noteAt(notes, pt, railBottom = LANE_DEFAULTS.railBottom) {
-  return notes.find((n) => centroid(n.corners)[1] >= railBottom && pointInPoly(pt, n.corners)) ?? null;
+/** The note under a point (for clicks on the wall), or null. */
+export function noteAt(notes, pt) {
+  return notes.find((n) => pointInPoly(pt, n.corners)) ?? null;
 }
 
 /**
  * @param notes [{ id, corners: [[x,y] x4], color }] tracked notes
  * @param opts  see LANE_DEFAULTS
  * @returns lanes sorted left to right:
- *   { id, x, w, railCorners, railNoteBottom, targetId, color, top, d, n, shadowed: [ids] }
- *   Idle lanes (no target) have targetId = null and top/d/n = null.
+ *   { id, x, w, upperId, upperColor, ceil, targetId, color, top, d, n }
+ *   Pair: id = upper note id, ceil = upper note's bottom edge, n = cycle in
+ *   16ths (bottom hit at phase, top hit at phase + n/2).
+ *   Lone: id = the note's id, upperId = null, ceil = 0 (top of the wall),
+ *   n = there and back in 16ths (hits at phase + k*n, see beat.js).
  */
 export function buildLanes(notes, opts = {}) {
   const o = { ...LANE_DEFAULTS, ...opts };
-  const rail = [];
-  const field = [];
-  for (const n of notes) (centroid(n.corners)[1] < o.railBottom ? rail : field).push(n);
-
-  const lanes = rail.map((r) => {
-    const xs = r.corners.map((p) => p[0]);
-    const x = centroid(r.corners)[0] + (o.offsets[r.id] || 0);
-    const railSpan = spanAt(r.corners, x);
-    const lane = {
-      id: r.id,
-      x,
-      w: Math.max(Math.max(...xs) - Math.min(...xs), o.minWidth),
-      railCorners: r.corners,
-      railNoteBottom: railSpan ? railSpan[1] : Math.max(...r.corners.map((p) => p[1])),
-      targetId: null,
-      color: null,
-      top: null,
-      d: null,
-      n: null,
-      shadowed: [],
-    };
-    const hits = [];
-    for (const f of field) {
+  const width = (n) => {
+    const xs = n.corners.map((p) => p[0]);
+    return Math.max(Math.max(...xs) - Math.min(...xs), o.minWidth);
+  };
+  const lanes = [];
+  const paired = new Set();
+  for (const u of notes) {
+    const [ux, uy] = centroid(u.corners);
+    const x = ux + (o.offsets[u.id] || 0);
+    const uSpan = spanAt(u.corners, x);
+    if (!uSpan) continue;
+    let best = null;
+    for (const f of notes) {
+      if (f === u || centroid(f.corners)[1] <= uy) continue;
       const s = spanAt(f.corners, x);
-      if (s) hits.push({ note: f, top: s[0] });
+      if (s && (!best || s[0] < best.top)) best = { note: f, top: s[0] };
     }
-    hits.sort((a, b) => a.top - b.top);
-    if (hits.length) {
-      const t = hits[0];
-      lane.targetId = t.note.id;
-      lane.color = t.note.color ?? null;
-      lane.top = t.top;
-      lane.d = Math.max(0, t.top - o.railBottom);
-      lane.n = lengthIn16ths(lane.d, o);
-      lane.shadowed = hits.slice(1).map((h) => h.note.id);
-    }
-    return lane;
-  });
+    if (!best) continue;
+    paired.add(u.id).add(best.note.id);
+    const d = Math.max(0, best.top - uSpan[1]);
+    lanes.push({
+      id: u.id, x, w: width(u),
+      upperId: u.id, upperColor: u.color ?? null, ceil: uSpan[1],
+      targetId: best.note.id, color: best.note.color ?? null, top: best.top,
+      d, n: 4 * lengthIn8ths(d, o),
+    });
+  }
+  for (const f of notes) {
+    if (paired.has(f.id)) continue;
+    const x = centroid(f.corners)[0] + (o.offsets[f.id] || 0);
+    const top = spanAt(f.corners, x)?.[0] ?? Math.min(...f.corners.map((p) => p[1]));
+    const down = (16 * top) / o.barH; // 16ths from the top down to the note
+    const fall = o.snap ? pow2(down, 1, 4) : Math.min(16, Math.max(2, down));
+    lanes.push({
+      id: f.id, x, w: width(f),
+      upperId: null, upperColor: null, ceil: 0,
+      targetId: f.id, color: f.color ?? null, top,
+      d: top, n: 2 * fall,
+    });
+  }
   return lanes.sort((a, b) => a.x - b.x || a.id - b.id);
 }
 
-// Drop distance -> time between hits, in 16th notes.
-export function lengthIn16ths(d, opts = {}) {
+// Pair gap -> time between consecutive hits (top or bottom), in 1/8 notes.
+export function lengthIn8ths(d, opts = {}) {
   const o = { ...LANE_DEFAULTS, ...opts };
   const n = d / o.unit;
-  return o.snap ? Math.max(1, Math.round(n)) : Math.max(o.minN, n);
+  return o.snap ? pow2(n, 0, 3) : Math.max(o.minN, n);
+}
+
+// Nearest power of two (log scale) between 2^lo and 2^hi: 3 -> 4, 2.5 -> 2.
+// Only these keep a lane's cycle a divisor of 1-2 bars, so the pattern
+// is the same every bar; 3/8 or 3/16 cycles drift against the bar line.
+const pow2 = (x, lo, hi) => 2 ** Math.min(hi, Math.max(lo, Math.round(Math.log2(Math.max(x, 1e-9)))));
+
+/** One-way travel time of a lane's ball, in 16ths (a lone ball's fall). */
+export function oneWay(lane) {
+  return lane.n / 2;
 }
 
 // "1/4", "3/16", "1", "≈0.37" ... for n 16ths.

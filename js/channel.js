@@ -12,12 +12,12 @@
 //   calib   { on: bool }                 show border + numbered corner dots
 //   cross   { pt: [x,y] | null }         calibration test crosshair
 //   ping    {}                           asks the projector to say hello
-//   beat    { clock: { running, bpm, anchor, pos0 }, bpm, snap, railBottom, unit,
-//             lanes: [{ id, x, w, top, d, n, targetId, color, instrument,
-//                       railNoteBottom, shadowed: [ids], balls: [{ id, phase }] }],
-//             highlight, mutes: [colours], solo, overlay, outlines, echoBars }
+//   beat    { clock: { running, bpm, anchor, pos0 }, bpm, snap,
+//             lanes: [{ ...buildLanes() lane (see lanes.js), balls: [{ id, phase }] }],
+//             instruments: { noteId: instrument }, highlight, focus, mutes: [colours],
+//             solo, overlay, outlines, echoBars }
 //           On every change + 1 s keep-alive. pos (16ths) = clockPos(clock, now);
-//           ball phases are in 16ths (see beat.js). Lane id = rail note id.
+//           ball phases are in 16ths (see beat.js).
 //   echo    { bars, playheadStep, rows: [{ pitch, color, hits: [{ step, v, kept }] }] }  ~4 Hz
 //   ring    { open: true, noteId, choices, index, deadline, timeout } | { open: false }
 //   toast   { key, text }                shown for 1 s

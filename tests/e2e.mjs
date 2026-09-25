@@ -169,23 +169,29 @@ try {
 
 
   console.log('beat: lanes, balls, rhythm');
-  // A clean wall: one rail note and a target whose top edge is 4 x unit below
-  // the rail, plus a note far off to the side.
+  // A clean wall: a pair (blue over green, 2 x unit apart = 1/4 between
+  // hits) plus a lone note far off to the side, top edge half way down the
+  // wall: its ball falls half a bar, so its hits land on the pair's grid.
   const NOTE = 90; // px at 1600x900: 0.1 of the projector height
   const half = NOTE / 2 / 900;
   const S = await ctl.evaluate(() => window.stickyWall.state.settings);
-  const targetTop = S.railBottom + 4 * S.unit;
+  const targetTop = 0.2 + 2 * S.unit;
   await ctl.evaluate(({ half, targetTop, NOTE }) => {
     window.stickyWall.state.sim.setNotes([
-      { cx: 0.4, cy: 0.075, color: 'blue', size: NOTE },
+      { cx: 0.4, cy: 0.15, color: 'blue', size: NOTE },
       { cx: 0.4, cy: targetTop + half, color: 'green', size: NOTE },
-      { cx: 0.8, cy: 0.5, color: 'red', size: NOTE },
+      { cx: 0.8, cy: 0.5 + half, color: 'red', size: NOTE },
     ]);
   }, { half, targetTop, NOTE });
-  await ctl.waitForFunction(() => window.stickyWall.engine.lanes.some((l) => l.targetId != null), null, { timeout: 15000 });
+  await ctl.waitForFunction(() => {
+    const l = window.stickyWall.engine.lanes;
+    return l.length === 2 && l[0].upperColor === 'blue' && l[0].color === 'green';
+  }, null, { timeout: 15000 });
   const lane = await ctl.evaluate(() => window.stickyWall.engine.lanes[0]);
-  check(lane.n === 4, `lane length is 4 16ths (d = ${lane.d.toFixed(3)})`);
-  check(lane.color === 'green', `target colour is green (${lane.color})`);
+  check(lane.n === 8, `pair cycle is 8 16ths (d = ${lane.d.toFixed(3)})`);
+  check(lane.color === 'green' && lane.upperColor === 'blue', `pair is blue over green (${lane.upperColor}/${lane.color})`);
+  const lone = await ctl.evaluate(() => window.stickyWall.engine.lanes[1]);
+  check(lone?.upperId == null && lone?.ceil === 0 && lone?.n === 16 && lone?.color === 'red', `the note off to the side is lone, dropped from the top (n = ${lone?.n})`);
 
   // Start the clock from the projector window (keys are forwarded).
   await proj.bringToFront();
@@ -199,10 +205,11 @@ try {
   };
   await sleep(700);
   const one = await hitsIn(5);
-  const gaps = one.slice(1).map((t, i) => (t - one[i]) * 1000);
+  // the lone note hits together with the pair: drop its near-zero gaps
+  const gaps = one.slice(1).map((t, i) => (t - one[i]) * 1000).filter((g) => g > 50);
   const worst = Math.max(...gaps.map((g) => Math.abs(g - 625)));
   check(gaps.length >= 6, `${one.length} hits in 5 s`);
-  check(worst <= 8, `hits every 625 ms at 96 BPM (worst error ${worst.toFixed(1)} ms)`);
+  check(worst <= 8, `ping-pong hits every 625 ms at 96 BPM (worst error ${worst.toFixed(1)} ms)`);
   await proj.screenshot({ path: path.join(OUT, '2-beat-projector.png') });
 
   await proj.keyboard.press('b');
@@ -242,16 +249,18 @@ try {
   check(inst === 'kick', `← ← ↵ sets the lane's instrument to kick (${inst})`);
   check(await proj.evaluate(() => !window.stickyWall.state.ring), 'ring closes on ↵');
   await sleep(1000);
-  const lastInst = await ctl.evaluate(() => window.stickyWall.state.hitLog.at(-1).instrument);
-  check(lastInst === 'kick', `hits now play the kick (${lastInst})`);
+  const lastInst = await ctl.evaluate(() => window.stickyWall.state.hitLog.filter((h) => h.color === 'green').at(-1).instrument);
+  check(lastInst === 'kick', `green hits now play the kick (${lastInst})`);
 
   console.log('keys, toasts, mute');
   await proj.keyboard.press('Digit3'); // green = 3rd colour
   await sleep(200);
   const toastText = await proj.evaluate(() => window.stickyWall.state.toast?.text);
   check(/Mute green/.test(toastText || ''), `3 mutes green, with a toast on the wall ("${toastText}")`);
-  const muted = await hitsIn(1.5);
-  check(muted.length === 0, `muted pitch is silent (${muted.length} hits)`);
+  const tm = await ctl.evaluate(() => performance.timeOrigin / 1000 + performance.now() / 1000);
+  await sleep(1500);
+  const muted = await ctl.evaluate((tm) => window.stickyWall.state.hitLog.filter((h) => h.time > tm), tm);
+  check(muted.length > 0 && muted.every((h) => h.color !== 'green'), `muted pitch is silent, the top note still plays (${muted.length} hits)`);
   await proj.keyboard.press('Digit3');
   await proj.keyboard.press('Shift+Slash');
   await sleep(300);
@@ -267,7 +276,14 @@ try {
   await proj.keyboard.press('Shift+BracketLeft');
   await proj.keyboard.press('BracketLeft');
   const laneRows = await ctl.$$eval('#lanesTable tbody tr', (trs) => trs.map((tr) => tr.innerText.replace(/\s+/g, ' ')));
-  check(laneRows.length === 1 && /E4/.test(laneRows[0]) && /1\/4/.test(laneRows[0]), `Lanes panel row: ${laneRows[0]}`);
+  check(laneRows.length === 3 && /top D4/.test(laneRows[0]) && /1\/4/.test(laneRows[0]) && /bottom E4/.test(laneRows[1]), `Lanes panel: a row per note, pair's two notes separately: ${laneRows.join(' | ')}`);
+  const focused = [];
+  for (let i = 0; i < 3; i++) {
+    await proj.keyboard.press('Tab');
+    await sleep(100);
+    focused.push(await ctl.evaluate(() => window.stickyWall.state.focus));
+  }
+  check(new Set(focused).size === 3, `Tab visits every note, both notes of a pair (${focused.join(',')})`);
 
   console.log('echo + keep');
   const rows = await proj.evaluate(() => window.stickyWall.state.echo?.rows?.map((r) => r.pitch) || []);
@@ -278,15 +294,22 @@ try {
   check(layers === 1, `K keeps a layer (${layers})`);
   await proj.screenshot({ path: path.join(OUT, '4-echo-projector.png') });
   await ctl.screenshot({ path: path.join(OUT, '4-echo-control.png') });
-  // take the target off the wall: its lane goes idle but the layer keeps playing
+  // take the notes off the wall: their lanes go but the layer keeps playing
   await ctl.evaluate(() => {
     const sim = window.stickyWall.state.sim;
-    sim.notes.splice(1, 1);
+    sim.notes.length = 0;
     sim.dirty = true;
   });
-  await ctl.waitForFunction(() => window.stickyWall.engine.lanes[0]?.targetId == null, null, { timeout: 10000 });
-  check(true, 'lane goes idle when its target is removed');
-  const t0 = await ctl.evaluate(() => performance.timeOrigin / 1000 + performance.now() / 1000);
+  await ctl.waitForFunction(() => window.stickyWall.engine.lanes.length === 0, null, { timeout: 10000 });
+  check(true, 'lanes go when their notes are removed');
+  const ghost = await proj.evaluate(() => window.stickyWall.state.beat.ghosts?.[0]);
+  check(ghost?.notes.length >= 2 && ghost?.lanes.length >= 1, `the kept layer's notes and balls stay on the wall as ghosts (${ghost?.notes.length} notes, ${ghost?.lanes.length} lanes)`);
+  await sleep(500);
+  await proj.screenshot({ path: path.join(OUT, '5-ghosts-projector.png') });
+  const ghostNotes = await ctl.evaluate(() => window.stickyWall.state.proj.notes.length);
+  check(ghostNotes === 0, `ghosts are never detected as notes (${ghostNotes})`);
+  // skip live hits already scheduled (look-ahead is at most 0.35 s)
+  const t0 = await ctl.evaluate(() => performance.timeOrigin / 1000 + performance.now() / 1000 + 0.4);
   await sleep(3000);
   const after = await ctl.evaluate((t0) => window.stickyWall.state.hitLog.filter((h) => h.time > t0), t0);
   check(after.length >= 6 && after.every((h) => h.kept), `the kept layer still plays (${after.length} hits, all kept)`);

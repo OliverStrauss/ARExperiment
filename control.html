@@ -24,7 +24,7 @@
       <span id="bpmOut" class="bpm">96 BPM</span>
       <button id="bpmUp" title="Tempo +2 (], ⇧] for +10)">+</button>
     </span>
-    <button id="snapBtn" title="Round lane lengths to whole 16ths (S)">Snap: on</button>
+    <button id="snapBtn" title="Round pair gaps to whole 1/8s (S)">Snap: on</button>
     <label title="Faint note outlines on the projector (debug)"><input type="checkbox" id="outlines"> Outlines</label>
   </div>
 
@@ -67,15 +67,15 @@
       <div class="card" style="margin-top:14px">
         <h2>Lanes <span class="h2-info" id="lanesInfo"></span></h2>
         <table class="lanes" id="lanesTable">
-          <thead><tr><th>Lane</th><th>Target</th><th>Instrument</th><th>Rate</th><th>Balls</th><th>Blocked</th></tr></thead>
+          <thead><tr><th>Lane</th><th>Note</th><th>Instrument</th><th>Rate</th><th>Balls</th></tr></thead>
           <tbody></tbody>
         </table>
-        <div class="status" id="lanesEmpty">Stick a note in the rail (the top band of the wall) to open a lane, then a note below it to hit.</div>
+        <div class="status" id="lanesEmpty">Stick a note on the wall: a ball bounces on it. Stack a second note above it and the ball ping-pongs between them.</div>
         <div class="row">
           <span class="status">Mute (click) / solo (⇧ click):</span>
           <span id="pitchButtons" class="row" style="margin:0"></span>
           <span class="spacer"></span>
-          <button id="resetBalls" title="One ball per lane, on the downbeat (R)">Reset balls (R)</button>
+          <button id="resetBalls" title="One ball per lane, back at the start (R)">Reset balls (R)</button>
           <button id="helpBtn" title="Show all keys on the wall (?)">Keys on wall (?)</button>
         </div>
       </div>

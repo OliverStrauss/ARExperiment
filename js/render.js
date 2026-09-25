@@ -3,11 +3,11 @@
 //
 // Scene coordinates are projector-normalized (0..1). Pixel sizes are given at a
 // 1600x900 reference and scaled by min(w/1600, h/900). Black background;
-// white is the only UI colour apart from note-coloured hit halos, and nothing
+// white is the only UI colour apart from note-coloured hit halos and echo ticks, and nothing
 // but halos, rings and tags is drawn near the notes, so vision stays clean.
 
-import { clockPos, ballY } from './beat.js';
-import { rateLabel } from './lanes.js';
+import { clockPos, ballY, ghostPos } from './beat.js';
+import { rateLabel, oneWay } from './lanes.js';
 import { centroid } from './tracker.js';
 import { rgbOf, pitchOf } from './colors.js';
 import { KEY_HELP } from './keys.js';
@@ -143,48 +143,38 @@ function drawBeat(ctx, w, h, scene) {
   const pos = clockPos(b.clock, now);
   const notes = new Map((scene.notes || []).map((n) => [n.id, n]));
   const px = (p) => [p[0] * w, p[1] * h];
-  const railY = b.railBottom * h;
+  const rN = ballRadiusN(w, h);
+  const gN = ballGapN(w, h);
+  const lanes = b.lanes || [];
 
-  // ruler: one line per 1/16 below the rail
+  // ruler: a lone ball takes k/8 of a bar to fall to line k. With Snap on
+  // only 1/8, 1/4, 1/2 and 1 bar exist (see lanes.js), so only those are drawn.
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  for (let k = 1; k <= 6; k++) {
-    const y = Math.round((b.railBottom + k * b.unit) * h) + 0.5;
-    if (y > h) break;
+  for (let k = 1; k <= 8; k++) {
+    if (b.snap && k & (k - 1)) continue;
+    const yN = (k * (b.barH ?? 1)) / 8;
+    if (yN > 1) break;
+    const y = Math.min(h - 1, Math.round(yN * h)) + 0.5; // 1 bar = bottom edge
     const major = k % 2 === 0;
     ctx.fillStyle = white(major ? 0.09 : 0.04);
     ctx.fillRect(0, y - 0.5, w, 1);
     ctx.fillStyle = white(major ? 0.6 : 0.35);
     ctx.font = `${Math.round((major ? 15 : 12) * s)}px ${MONO}`;
-    ctx.fillText(rateLabel(k), 10 * s, y - 10 * s);
+    ctx.fillText(rateLabel(2 * k), 10 * s, y - 10 * s);
   }
 
-  // rail
-  ctx.strokeStyle = white(0.22);
-  ctx.lineWidth = Math.max(1, 1.5 * s);
-  ctx.setLineDash([8 * s, 8 * s]);
-  roundRect(ctx, 24 * s, 16 * s, w - 48 * s, Math.max(10, railY - 32 * s), 14 * s);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = white(0.45);
-  ctx.font = `${Math.round(13 * s)}px ${MONO}`;
-  ctx.fillText('RAIL · A NOTE HERE OPENS A LANE BELOW IT', 40 * s, railY - 30 * s);
-
-  const rN = ballRadiusN(w, h);
-  const gN = ballGapN(w, h);
-  const lanes = b.lanes || [];
-
-  // lane bands + dashed centre lines
+  // lane bands + dashed centre lines, rate label at the top of each
   for (const lane of lanes) {
     const hi = lane.id === b.highlight;
     const x = lane.x * w;
     const lw = lane.w * w;
-    const y0 = Math.max(railY, (lane.railNoteBottom ?? 0) * h + 6 * s);
-    const y1 = lane.top != null ? lane.top * h : h;
+    const y0 = lane.ceil * h + (lane.upperId != null ? 6 * s : 0);
+    const y1 = lane.top * h;
     if (y1 > y0) {
-      ctx.fillStyle = white(lane.top != null ? (hi ? 0.07 : 0.03) : hi ? 0.04 : 0.015);
+      ctx.fillStyle = white(hi ? 0.07 : 0.03);
       ctx.fillRect(x - lw / 2, y0, lw, y1 - y0);
-      ctx.strokeStyle = white(lane.top != null ? 0.22 : 0.1);
+      ctx.strokeStyle = white(0.22);
       ctx.lineWidth = Math.max(1, s);
       ctx.setLineDash([2 * s, 12 * s]);
       ctx.beginPath();
@@ -193,63 +183,67 @@ function drawBeat(ctx, w, h, scene) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-  }
-
-  // rail note rings + rate labels, highlight box
-  for (const lane of lanes) {
-    const rail = notes.get(lane.id);
-    if (!rail) continue;
-    const pts = rail.corners.map(px);
-    const [cx, cy] = centroid(pts);
-    const reach = Math.max(...pts.map(([x, y]) => Math.hypot(x - cx, y - cy)));
-    const R = Math.max(46 * s, reach + 8 * s);
-    ctx.lineWidth = Math.max(1.5, 3 * s);
-    ctx.strokeStyle = white(0.2);
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.stroke();
-    const first = lane.balls?.[0];
-    if (first && lane.n != null) {
-      // cycle progress of ball 1, 0 = just hit
-      const u = ((((pos - first.phase) / lane.n) % 1) + 1) % 1;
-      ctx.strokeStyle = white(0.9);
-      ctx.beginPath();
-      ctx.arc(cx, cy, R, -Math.PI / 2, -Math.PI / 2 + u * Math.PI * 2);
-      ctx.stroke();
-    }
     const count = lane.balls?.length || 0;
-    const label = lane.n == null ? '—' : `${rateLabel(lane.n, b.snap)}${count > 1 ? ` ×${count}` : ''}`;
-    ctx.fillStyle = white(lane.n == null ? 0.4 : 0.85);
+    ctx.fillStyle = white(0.85);
     ctx.font = `${Math.round(15 * s)}px ${MONO}`;
     ctx.textAlign = 'left';
-    ctx.fillText(label, cx + R + 10 * s, cy);
-    if (lane.id === b.highlight) {
-      const xs = pts.map((p) => p[0]);
-      const ys = pts.map((p) => p[1]);
-      const side = Math.max(116 * s, Math.max(...xs) - Math.min(...xs) + 24 * s, Math.max(...ys) - Math.min(...ys) + 24 * s);
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = Math.max(1.5, 2.5 * s);
-      roundRect(ctx, cx - side / 2, cy - side / 2, side, side, 18 * s);
-      ctx.stroke();
-    }
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${rateLabel(oneWay(lane), b.snap)}${count > 1 ? ` ×${count}` : ''}`, x + lw / 2 + 10 * s, y0 + 12 * s);
   }
 
-  // note tags under targets: "C4 · KICK"
+  // highlight box around the selected note (either note of a pair)
+  const hiNote = notes.get(b.focus ?? b.highlight);
+  if (hiNote) {
+    const pts = hiNote.corners.map(px);
+    const [cx, cy] = centroid(pts);
+    const xs = pts.map((p) => p[0]);
+    const ys = pts.map((p) => p[1]);
+    const side = Math.max(116 * s, Math.max(...xs) - Math.min(...xs) + 24 * s, Math.max(...ys) - Math.min(...ys) + 24 * s);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = Math.max(1.5, 2.5 * s);
+    roundRect(ctx, cx - side / 2, cy - side / 2, side, side, 18 * s);
+    ctx.stroke();
+  }
+
+  // tags on every note that plays: "C4 · KICK", above a pair's upper note
+  // (its ball comes from below), else below
   ctx.textAlign = 'center';
   ctx.font = `${Math.round(15 * s)}px ${MONO}`;
-  const tagged = new Set();
-  for (const lane of lanes) {
-    if (lane.targetId == null || tagged.has(lane.targetId)) continue;
-    tagged.add(lane.targetId);
-    const note = notes.get(lane.targetId);
-    if (!note) continue;
+  const uppers = new Set(lanes.map((l) => l.upperId));
+  for (const note of notes.values()) {
     const pts = note.corners.map(px);
     const [cx] = centroid(pts);
-    const bottom = Math.max(...pts.map((p) => p[1]));
-    const muted = b.solo ? lane.color !== b.solo : (b.mutes || []).includes(lane.color);
+    const ys = pts.map((p) => p[1]);
+    const tagY = uppers.has(note.id) ? Math.min(...ys) - 22 * s : Math.max(...ys) + 22 * s;
+    const muted = b.solo ? note.color !== b.solo : (b.mutes || []).includes(note.color);
     ctx.fillStyle = white(muted ? 0.35 : 0.8);
-    const tag = `${pitchOf(lane.color) ?? '?'} · ${(lane.instrument || 'bell').toUpperCase()}${muted ? ' · MUTE' : ''}`;
-    ctx.fillText(tag, cx, bottom + 22 * s);
+    const tag = `${pitchOf(note.color) ?? '?'} · ${(b.instruments?.[note.id] || 'bell').toUpperCase()}${muted ? ' · MUTE' : ''}`;
+    ctx.fillText(tag, cx, tagY);
+  }
+
+  // ghosts of kept layers whose notes are gone: dashed outlines that flash
+  // white on each replayed hit (no colour, so vision never sees a note), and
+  // dim balls replaying the kept loop
+  for (const g of b.ghosts || []) {
+    ctx.lineWidth = Math.max(1, 2 * s);
+    ctx.setLineDash([6 * s, 6 * s]);
+    for (const n of g.notes) {
+      if (notes.has(n.id)) continue;
+      const halo = (scene.halos || []).find((hl) => hl.noteId === n.id && now >= hl.at && now - hl.at < HALO_MS / 1000);
+      ctx.strokeStyle = white(halo ? 0.9 - (0.6 * (now - halo.at) * 1000) / HALO_MS : 0.3);
+      poly(ctx, n.corners.map(px));
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.fillStyle = white(0.35);
+    for (const lane of g.lanes) {
+      if (notes.has(lane.targetId)) continue;
+      for (const ball of lane.balls) {
+        ctx.beginPath();
+        ctx.arc(lane.x * w, ballY(lane, ball.phase, ghostPos(g, pos), rN, gN) * h, BALL_R * s * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   // balls (+ a short trail on the side they came from)
@@ -257,11 +251,11 @@ function drawBeat(ctx, w, h, scene) {
   for (const lane of lanes) {
     const x = lane.x * w;
     for (const ball of lane.balls || []) {
-      if (b.clock.running && lane.n != null) {
+      if (b.clock.running) {
         [12, 9, 6].forEach((r, i) => {
           ctx.fillStyle = white([0.35, 0.18, 0.08][i]);
           ctx.beginPath();
-          ctx.arc(x, ballY(lane, ball.phase, pos - trailDt * (i + 1), b.railBottom, rN, gN) * h, r * s, 0, Math.PI * 2);
+          ctx.arc(x, ballY(lane, ball.phase, pos - trailDt * (i + 1), rN, gN) * h, r * s, 0, Math.PI * 2);
           ctx.fill();
         });
       }
@@ -270,7 +264,7 @@ function drawBeat(ctx, w, h, scene) {
       ctx.shadowBlur = 24 * s;
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      ctx.arc(x, ballY(lane, ball.phase, pos, b.railBottom, rN, gN) * h, BALL_R * s, 0, Math.PI * 2);
+      ctx.arc(x, ballY(lane, ball.phase, pos, rN, gN) * h, BALL_R * s, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
@@ -375,6 +369,11 @@ function drawRing(ctx, w, h, ring, note, now) {
 
 // ---------------------------------------------------------------- echo strip
 
+/** Weight of the grid line at a 16th step: 3 bar, 2 quarter, 1 eighth, 0 sixteenth. */
+export function gridLevel(step) {
+  return step % 16 === 0 ? 3 : step % 4 === 0 ? 2 : step % 2 === 0 ? 1 : 0;
+}
+
 function drawEcho(ctx, w, h, echo, beat, pos) {
   const s = refScale(w, h);
   const x0 = 190 * s;
@@ -396,14 +395,27 @@ function drawEcho(ctx, w, h, echo, beat, pos) {
   ctx.fillText(`ECHO · LAST ${echo.bars} BARS`, x0, top - 10 * s);
   ctx.textAlign = 'right';
   ctx.fillText(`${beat.bpm} BPM · BAR ${Math.floor(play / 16) + 1}/${echo.bars}`, x1, top - 10 * s);
-  // bar lines
-  ctx.fillStyle = white(0.12);
-  for (let bar = 0; bar <= echo.bars; bar++) ctx.fillRect(Math.round(xOf(bar * 16)), top, 1, bottom - top);
+  // grid like a score: bar lines strongest, then quarters, 8ths, 16ths;
+  // beat numbers 1-4 under each bar
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let st = 0; st <= steps; st++) {
+    const g = gridLevel(st);
+    const ext = [0, 0, 2, 6][g] * s;
+    ctx.fillStyle = white([0.05, 0.1, 0.2, 0.45][g]);
+    ctx.fillRect(Math.round(xOf(st)), top - ext, g === 3 ? 2 : 1, bottom - top + 2 * ext);
+    if (g >= 2 && st < steps) {
+      ctx.fillStyle = white(g === 3 ? 0.7 : 0.4);
+      ctx.fillText(String(((st / 4) % 4) + 1), xOf(st), bottom + 8 * s);
+    }
+  }
+  ctx.textBaseline = 'alphabetic';
   rows.forEach((row, r) => {
     const y = top + r * (rowH + gap);
+    const [cr, cg, cb] = rgbOf(row.color);
     for (const hit of row.hits) {
       const ahead = !hit.kept && hit.step > play;
-      ctx.fillStyle = white(hit.kept ? 0.95 : ahead ? 0.18 : 0.45);
+      ctx.fillStyle = `rgba(${cr},${cg},${cb},${hit.kept ? 0.95 : ahead ? 0.18 : 0.45})`;
       roundRect(ctx, xOf(hit.step) - 5 * s, y, 10 * s, rowH, 2 * s);
       ctx.fill();
     }

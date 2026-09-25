@@ -6,10 +6,10 @@ import { NoteTracker, canonicalCorners, centroid } from '../js/tracker.js';
 import { solveHomography, applyH, invertH, isConvexQuad } from '../js/homography.js';
 import { snapToDot } from '../js/calibration.js';
 import { NOTE_COLORS, classifyColor } from '../js/colors.js';
-import { buildLanes, spanAt, rateLabel, noteAt } from '../js/lanes.js';
+import { buildLanes, spanAt, rateLabel, noteAt, oneWay } from '../js/lanes.js';
 import { InstrumentRing } from '../js/ring.js';
 import { INSTRUMENTS } from '../js/instruments.js';
-import { BeatEngine, ballProgress, ballY, clockPos } from '../js/beat.js';
+import { BeatEngine, ballProgress, ballY, clockPos, ghostPos } from '../js/beat.js';
 
 const require = createRequire(import.meta.url);
 let failed = 0;
@@ -155,53 +155,65 @@ test('pitches: purple lowest ... red highest', () => {
 // A note as a box: centre x, top y, half-size (so the top edge is exact).
 const box = (id, cx, top, color = 'green', s = 0.03) => ({ id, color, corners: square(cx, top + s, s) });
 
-test('lanes: a note inside the rail opens a lane, others do not', () => {
-  const lanes = buildLanes([box(1, 0.3, 0.02), box(2, 0.6, 0.4)], { railBottom: 0.15 });
-  assert.equal(lanes.length, 1);
-  assert.equal(lanes[0].id, 1);
-  close(lanes[0].x, 0.3, 1e-9, 'lane x = rail note centre');
+test('lanes: a lone ball drops from the top of the wall, 1 wall height per bar', () => {
+  const lanes = buildLanes([box(1, 0.3, 0.5), box(2, 0.6, 0.25)], { barH: 1 });
+  assert.deepEqual(lanes.map((l) => l.id), [1, 2]);
+  assert.ok(lanes.every((l) => l.upperId == null && l.targetId === l.id && l.ceil === 0));
+  close(lanes[0].top, 0.5, 1e-9, 'top edge');
+  assert.equal(lanes[0].n, 16, 'half a bar down + half a bar up');
+  assert.equal(lanes[1].n, 8, 'higher note: shorter drop');
+  assert.equal(oneWay(lanes[0]), 8, 'falls 1/2 bar');
+  assert.equal(buildLanes([box(1, 0.3, 0.5)], { barH: 0.5 })[0].n, 32, 'barH scales the speed');
+  const fall = (top, snap = true) => oneWay(buildLanes([box(1, 0.3, top)], { snap })[0]);
+  assert.equal(fall(0.2), 4, 'snaps to 1/8s: 0.2 -> 2/8');
+  assert.equal(fall(0.01), 2, 'shortest fall 1/8');
+  assert.equal(fall(0.4), 8, '6.4/16 snaps to 1/2 bar, never 3/8');
+  assert.equal(buildLanes([box(1, 0.3, 0.9)], { barH: 0.5 })[0].n, 32, 'longest fall 1 bar');
+  close(fall(0.2, false), 3.2, 1e-9, 'snap off');
 });
 
-test('lanes: target is the first note below the rail on the centre line', () => {
-  const notes = [box(1, 0.5, 0.02), box(2, 0.5, 0.6), box(3, 0.51, 0.35), box(4, 0.8, 0.2)];
-  const [lane] = buildLanes(notes, { railBottom: 0.15, unit: 0.1 });
-  assert.equal(lane.targetId, 3);
-  close(lane.top, 0.35, 1e-9, 'top edge');
-  close(lane.d, 0.2, 1e-9, 'd');
-  assert.deepEqual(lane.shadowed, [2], 'lower note in the lane is shadowed');
+test('lanes: stacked notes pair up, gap sets 1/8s, 3 stacked chain', () => {
+  const notes = [box(1, 0.5, 0.1), box(2, 0.5, 0.6), box(3, 0.51, 0.36), box(4, 0.8, 0.2)];
+  const lanes = buildLanes(notes, { unit: 0.1 });
+  const pair = lanes.find((l) => l.id === 1);
+  assert.equal(pair.upperId, 1);
+  assert.equal(pair.targetId, 3);
+  close(pair.ceil, 0.16, 1e-9, 'upper note bottom');
+  close(pair.d, 0.2, 1e-9, 'd');
+  assert.equal(pair.n, 8, '2 x 1/8 each way');
+  assert.equal(oneWay(pair), 4);
+  const chain = lanes.find((l) => l.id === 3);
+  assert.equal(chain.targetId, 2, 'middle note pairs with the one below');
+  assert.equal(lanes.find((l) => l.id === 4).upperId, null, 'off to the side: lone');
+  assert.equal(lanes.length, 3, 'paired notes get no lone lane');
 });
 
-test('lanes: no note under the rail note -> idle lane', () => {
-  const [lane] = buildLanes([box(1, 0.2, 0.02), box(2, 0.7, 0.5)]);
-  assert.equal(lane.targetId, null);
-  assert.equal(lane.n, null);
-});
-
-test('lanes: tilted target uses the top edge where it crosses the centre line', () => {
+test('lanes: tilted lower note uses the top edge where it crosses the centre line', () => {
   const tilted = { id: 2, color: 'red', corners: [[0.4, 0.5], [0.6, 0.6], [0.6, 0.65], [0.4, 0.55]] };
-  const [lane] = buildLanes([box(1, 0.5, 0.02), tilted], { railBottom: 0.15 });
+  const [lane] = buildLanes([box(1, 0.5, 0.02), tilted]);
   close(lane.top, 0.55, 1e-9, 'top at x=0.5');
   close(spanAt(tilted.corners, 0.5)[1], 0.6, 1e-9, 'bottom at x=0.5');
 });
 
-test('lanes: n rounds with Snap on, stays fractional with Snap off, min 1', () => {
+test('lanes: pair n rounds with Snap on, stays fractional with Snap off, min 1/8', () => {
   const notes = (top) => [box(1, 0.5, 0.02), box(2, 0.5, top)];
-  const at = (top, snap) => buildLanes(notes(top), { railBottom: 0.15, unit: 0.1, snap })[0].n;
-  assert.equal(at(0.15 + 0.37, true), 4);
-  assert.equal(at(0.15 + 0.33, true), 3);
-  close(at(0.15 + 0.37, false), 3.7, 1e-9, 'snap off');
-  assert.equal(at(0.16, true), 1, 'very small d clamps to 1');
+  const at = (top, snap) => buildLanes(notes(top), { unit: 0.1, snap })[0].n;
+  assert.equal(at(0.08 + 0.37, true), 16);
+  assert.equal(at(0.08 + 0.33, true), 16, '3.3/8 snaps to 4/8: cycles divide the bar');
+  assert.equal(at(0.08 + 0.25, true), 8, '2.5/8 snaps to 2/8');
+  close(at(0.08 + 0.37, false), 14.8, 1e-9, 'snap off');
+  assert.equal(at(0.09, true), 4, 'very small d clamps to 1/8');
 });
 
-test('lanes: width is the rail note width, clamped to 2 ball diameters', () => {
+test('lanes: width is the note width, clamped to 2 ball diameters', () => {
   const wide = buildLanes([box(1, 0.5, 0.02, 'blue', 0.05)], { minWidth: 0.04 })[0];
-  close(wide.w, 0.1, 1e-9, 'rail note width');
+  close(wide.w, 0.1, 1e-9, 'note width');
   const narrow = buildLanes([box(1, 0.5, 0.02, 'blue', 0.01)], { minWidth: 0.04 })[0];
   close(narrow.w, 0.04, 1e-9, 'clamped');
 });
 
-test('lanes: sorted left to right, overlapping lanes allowed, nudge offsets x', () => {
-  const notes = [box(7, 0.6, 0.02), box(8, 0.3, 0.02), box(9, 0.61, 0.03), box(2, 0.6, 0.5)];
+test('lanes: sorted left to right, two uppers can share a lower note, nudge offsets x', () => {
+  const notes = [box(7, 0.58, 0.02), box(8, 0.3, 0.02), box(9, 0.64, 0.03), box(2, 0.6, 0.5, 'green', 0.05)];
   const lanes = buildLanes(notes, { offsets: { 8: 0.005 } });
   assert.deepEqual(lanes.map((l) => l.id), [8, 7, 9]);
   close(lanes[0].x, 0.305, 1e-9, 'nudged');
@@ -217,9 +229,14 @@ test('lanes: rate labels', () => {
 
 // ------------------------------------------------------------------ beat engine
 
-// One lane with a target n 16ths below the rail.
+// One single-note lane hitting every n 16ths.
 function laneN(n, id = 1, color = 'green', targetId = 10) {
-  return { id, x: 0.5, w: 0.05, railNoteBottom: 0.1, targetId, color, top: 0.15 + n * 0.1, d: n * 0.1, n, shadowed: [] };
+  return { id, x: 0.5, w: 0.05, upperId: null, upperColor: null, ceil: 0.1, targetId, color, top: 0.5, d: 0.4, n };
+}
+
+// Put every ball's first hit on the downbeat (call after start(), which sends balls to the top).
+function onBeat(e) {
+  for (const list of e.balls.values()) for (const b of list) b.phase = 0;
 }
 
 // Run the scheduler for `secs` with 25 ms ticks; returns all hits.
@@ -233,6 +250,7 @@ test('beat: at 96 BPM a lane with n = 4 hits exactly 0.625 s apart, each hit onc
   const e = new BeatEngine({ bpm: 96 });
   e.setLanes([laneN(4)]);
   e.start(100);
+  onBeat(e);
   const hits = run(e, 100, 5);
   assert.ok(hits.length >= 7, `hits: ${hits.length}`);
   close(hits[0].time, 100, 1e-9, 'first hit on the downbeat');
@@ -242,33 +260,54 @@ test('beat: at 96 BPM a lane with n = 4 hits exactly 0.625 s apart, each hit onc
   assert.equal(hits[0].instrument, 'bell');
 });
 
-test('beat: two balls give the union of both phase grids', () => {
+test('beat: a second ball is spaced evenly, quarters become 8ths', () => {
   const e = new BeatEngine({ bpm: 120 });
   e.setLanes([laneN(4)]);
   e.start(0);
+  onBeat(e);
   e.tick(0);
-  // at pos 1 (1/16 in), drop a second ball: it hits n/2 = 2 16ths later, at pos 3
+  // added at pos 1, the second ball still lands half a cycle from the first
   const t1 = e.timeAt(1);
-  const b = e.addBall(1, t1);
-  assert.equal(b.phase, 3);
+  const b = e.addBall(1);
+  assert.equal((b.phase - e.ballsOf(1)[0].phase) % 4, 2);
   const hits = run(e, t1, 4).map((h) => h.pos);
-  const grid = hits.filter((p) => p % 4 === 0);
-  const off = hits.filter((p) => p % 4 === 3);
-  assert.equal(grid.length + off.length, hits.length);
-  assert.ok(grid.length >= 7 && off.length >= 7, `${grid.length} + ${off.length}`);
+  assert.ok(hits.length >= 14, `${hits.length}`);
+  assert.ok(hits.every((p) => p % 2 === 0), 'every hit on an 8th');
+  hits.slice(1).forEach((p, i) => assert.equal(p - hits[i], 2, 'even 8ths'));
   assert.equal(e.removeBall(1), true);
   assert.equal(e.removeBall(1), false, 'a lane keeps at least one ball');
 });
 
-test('beat: max balls per lane, reset brings one ball back on the downbeat', () => {
+test('beat: 3 and 4 balls spread evenly (triplets, 16ths); removing respaces', () => {
+  for (const [k, gap] of [[3, 4 / 3], [4, 1]]) {
+    const e = new BeatEngine({ bpm: 120 });
+    e.setLanes([laneN(4)]);
+    e.start(0);
+    onBeat(e);
+    e.tick(0);
+    for (let i = 1; i < k; i++) e.addBall(1);
+    const hits = run(e, 0, 4).map((h) => h.pos).sort((x, y) => x - y);
+    assert.ok(hits.length >= 7 * k, `${hits.length}`);
+    hits.slice(1).forEach((p, i) => close(p - hits[i], gap, 1e-9, `${k} balls even`));
+  }
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.addBall(1);
+  e.addBall(1);
+  e.removeBall(1);
+  const [a, b] = e.ballsOf(1);
+  assert.equal(b.phase - a.phase, 2, 'back to 8ths');
+});
+
+test('beat: max balls per lane, reset brings one ball back to the top', () => {
   const e = new BeatEngine({ maxBallsPerLane: 3 });
   e.setLanes([laneN(4)]);
-  assert.ok(e.addBall(1, 0.3));
-  assert.ok(e.addBall(1, 0.7));
-  assert.equal(e.addBall(1, 0.9), null);
+  assert.ok(e.addBall(1));
+  assert.ok(e.addBall(1));
+  assert.equal(e.addBall(1), null);
   e.resetBalls();
   assert.equal(e.ballsOf(1).length, 1);
-  assert.equal(e.ballsOf(1)[0].phase, 0);
+  assert.equal(e.ballsOf(1)[0].phase, 2, 'starts at the top, hits half a cycle in');
 });
 
 test('beat: tempo change keeps phase continuity', () => {
@@ -299,6 +338,18 @@ test('beat: stopped clock schedules nothing and holds its position', () => {
   close(e.pos(9), p, 1e-9, 'resumes where it stopped');
 });
 
+test('beat: start and stop send the first ball of each lane back to the top, the rest stay even', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes([laneN(4), laneN(8, 2, 'red', 11)]);
+  e.start(0);
+  e.addBall(1);
+  e.stop(0.7);
+  assert.equal(e.pos0, Math.ceil(0.7 * 8), 'stops on the grid');
+  for (const l of e.lanes) close(ballProgress(e.pos0, e.ballsOf(l.id)[0].phase, l.n), 0, 1e-9, 'at the top');
+  const [x, y] = e.ballsOf(1);
+  assert.equal(y.phase - x.phase, 2, 'second ball half a cycle behind');
+});
+
 test('beat: mute and solo filter hits by colour', () => {
   const e = new BeatEngine({ bpm: 120 });
   e.setLanes([laneN(4, 1, 'green', 10), laneN(4, 2, 'red', 11)]);
@@ -315,18 +366,46 @@ test('beat: mute and solo filter hits by colour', () => {
   assert.equal(colors().size, 2);
 });
 
-test('beat: idle lanes are silent; lanes keep balls until their rail note goes', () => {
+test('beat: pair ping-pongs, bottom and top note alternate every n/2', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes([{ ...laneN(8, 1, 'green', 10), upperId: 1, upperColor: 'red', ceil: 0.2 }]);
+  e.start(0);
+  const hits = run(e, 0, 2);
+  assert.deepEqual(hits.slice(0, 4).map((h) => [h.pos, h.noteId, h.color]), [[0, 1, 'red'], [4, 10, 'green'], [8, 1, 'red'], [12, 10, 'green']]);
+  e.toggleMute('red');
+  assert.ok(run(e, 2, 2).every((h) => h.color === 'green'), 'muting the top note keeps the bottom');
+});
+
+test('beat: lone notes hit together only at the same height', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes(buildLanes([box(1, 0.2, 0.5), box(2, 0.5, 0.5), box(3, 0.8, 0.25)]));
+  e.start(0);
+  const first = new Map();
+  for (const h of run(e, 0, 3)) if (!first.has(h.noteId)) first.set(h.noteId, h.pos);
+  assert.equal(first.get(1), first.get(2), 'same height: same moment');
+  assert.equal(first.get(1), 8, 'drops from the top on the downbeat, lands half a cycle later');
+  assert.equal(first.get(3), 4, 'higher note is hit sooner');
+});
+
+test('beat: lanes keep balls until their note goes', () => {
   const e = new BeatEngine();
   e.setLanes([laneN(4)]);
-  e.addBall(1, 0.5);
-  e.setLanes([{ ...laneN(4), targetId: null, n: null, top: null, d: null }]);
-  e.start(0);
-  assert.equal(run(e, 0, 2).length, 0);
-  assert.equal(e.ballsOf(1).length, 2, 'balls kept while idle');
-  e.setLanes([laneN(4)]);
-  assert.ok(run(e, 2, 2).length > 0, 'resumes when a target appears');
+  e.addBall(1);
+  e.setLanes([laneN(8)]);
+  assert.equal(e.ballsOf(1).length, 2, 'balls kept when the lane changes');
   e.setLanes([]);
-  assert.equal(e.ballsOf(1).length, 0, 'rail note removed -> balls gone');
+  assert.equal(e.ballsOf(1).length, 0, 'note removed -> balls gone');
+});
+
+test('beat: a lane whose cycle changes is put back in step with the bar', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(16)]);
+  assert.equal(e.ballsOf(1)[0].phase, 8);
+  e.setLanes([laneN(8)]);
+  assert.equal(e.ballsOf(1)[0].phase % 8, 4, 'same phase as a fresh n = 8 lane');
+  e.ballsOf(1)[0].phase = 5;
+  e.setLanes([laneN(8)]);
+  assert.equal(e.ballsOf(1)[0].phase, 5, 'same cycle: phase untouched');
 });
 
 test('beat: instruments stored by note id, forgotten when the note goes', () => {
@@ -334,20 +413,48 @@ test('beat: instruments stored by note id, forgotten when the note goes', () => 
   e.setLanes([laneN(4)]);
   e.setInstrument(10, 'kick');
   e.start(0);
-  assert.equal(e.tick(0)[0].instrument, 'kick');
-  e.pruneInstruments([1, 2]);
+  assert.equal(run(e, 0, 1)[0].instrument, 'kick');
+  e.syncNotes([], 1);
   assert.equal(e.instrumentOf(10), 'bell');
 });
 
-test('beat: ball goes rail -> target -> rail, touching the target on a hit', () => {
+test('beat: a moved note (new id, same colour) keeps its instrument', () => {
+  const e = new BeatEngine();
+  const g = (id) => ({ id, color: 'green', corners: [] });
+  const r = (id) => ({ id, color: 'red', corners: [] });
+  e.syncNotes([g(1), r(2)], 0);
+  e.setInstrument(1, 'kick');
+  // new note shows up first, the old one is dropped a moment later
+  e.syncNotes([g(1), r(2), g(3)], 1);
+  e.syncNotes([r(2), g(3)], 2);
+  assert.equal(e.instrumentOf(3), 'kick', 'new green inherits');
+  assert.equal(e.instrumentOf(2), 'bell', 'other colours untouched');
+  // removed first, placed again later (within MOVE_S)
+  e.syncNotes([r(2)], 3);
+  e.syncNotes([r(2), g(4)], 8);
+  assert.equal(e.instrumentOf(4), 'kick');
+  // too late: forgotten
+  e.syncNotes([r(2)], 9);
+  e.syncNotes([r(2), g(5)], 30);
+  assert.equal(e.instrumentOf(5), 'bell');
+});
+
+test('beat: ghost of a kept layer replays its window in a loop', () => {
+  const g = { from: 40, L: 16 };
+  assert.equal(ghostPos(g, 40), 40);
+  assert.equal(ghostPos(g, 60), 44);
+  assert.equal(ghostPos(g, 20), 52);
+});
+
+test('beat: ball goes top -> target -> top, touching the target on a hit', () => {
   const lane = laneN(4);
   assert.equal(ballProgress(0, 0, 4), 1);
   assert.equal(ballProgress(2, 0, 4), 0);
   close(ballProgress(1, 0, 4), 0.5, 1e-9, 'halfway');
-  close(ballY(lane, 0, 8, 0.15, 0.02), lane.top - 0.02, 1e-9, 'touches the top edge');
-  close(ballY(lane, 0, 10, 0.15, 0.02), 0.15, 1e-9, 'back at the rail');
-  const idle = { ...lane, n: null, top: null };
-  close(ballY(idle, 0, 3, 0.15, 0.02), 0.15, 1e-9, 'idle: waits at the rail');
+  close(ballY(lane, 0, 8, 0.02), lane.top - 0.02, 1e-9, 'touches the top edge');
+  close(ballY(lane, 0, 10, 0.02), 0.1, 1e-9, 'lone: back at the ceiling');
+  const pair = { ...lane, upperId: 1 };
+  close(ballY(pair, 0, 10, 0.02, 0.01), 0.13, 1e-9, 'pair: turns just below the upper note');
   const clock = { running: true, bpm: 60, anchor: 5, pos0: 8 };
   close(clockPos(clock, 6), 12, 1e-9, '60 bpm = 4 16ths per second');
 });
@@ -358,6 +465,7 @@ test('echo: hits land on the correct 1/16 step, highest pitch first', () => {
   const e = new BeatEngine({ bpm: 120, echoBars: 4 });
   e.setLanes([laneN(4, 1, 'green', 10), laneN(3, 2, 'red', 11)]);
   e.start(0);
+  onBeat(e);
   run(e, 0, 2); // 2 s at 120 BPM = 16 16ths
   const v = e.echoView(2);
   assert.equal(v.bars, 4);
@@ -372,6 +480,7 @@ test('echo: Keep snapshots, layers replay on the next loop, Undo pops, Clear emp
   const e = new BeatEngine({ bpm: 120, echoBars: 1 }); // 16-step loop = 2 s
   e.setLanes([laneN(4, 1, 'green', 10)]);
   e.start(0);
+  onBeat(e);
   run(e, 0, 2.05);
   const layer = e.keep();
   assert.ok(layer, 'kept');
@@ -385,6 +494,7 @@ test('echo: Keep snapshots, layers replay on the next loop, Undo pops, Clear emp
   assert.equal(new Set(replay.map((h) => h.pos)).size, replay.length, 'each step once per loop');
   assert.ok(e.echoView(6).rows[0].hits.every((h) => h.kept), 'echo shows kept hits');
   e.setLanes([laneN(2, 1, 'red', 11)]);
+  onBeat(e);
   run(e, 6.05, 2);
   assert.ok(e.keep());
   assert.equal(e.layers.length, 2);
@@ -444,11 +554,11 @@ test('ring: commits by itself after 4 s idle; spinning restarts the countdown', 
   assert.equal(r.expired(17), true);
 });
 
-test('ring: clicks hit notes but never rail notes', () => {
+test('ring: clicks hit any note', () => {
   const notes = [box(1, 0.5, 0.02), box(2, 0.5, 0.5)];
-  assert.equal(noteAt(notes, [0.5, 0.52], 0.15)?.id, 2);
-  assert.equal(noteAt(notes, [0.5, 0.05], 0.15), null, 'rail note');
-  assert.equal(noteAt(notes, [0.9, 0.9], 0.15), null, 'empty wall');
+  assert.equal(noteAt(notes, [0.5, 0.52])?.id, 2);
+  assert.equal(noteAt(notes, [0.5, 0.05])?.id, 1, 'top of the wall too');
+  assert.equal(noteAt(notes, [0.9, 0.9]), null, 'empty wall');
 });
 
 // ------------------------------------------------------------------ homography
