@@ -9,6 +9,11 @@ const PALETTE_KEY = 'sticky-wall.palette.v1';
 // Slider schema: drives both the defaults and the generated UI in control.html.
 // Areas are a percentage of the camera frame so they survive resolution changes.
 export const SLIDERS = [
+  { key: 'bpm', group: 'Beat', label: 'Tempo BPM', min: 30, max: 240, step: 1, def: 96 },
+  { key: 'railBottom', group: 'Beat', label: 'Rail height', min: 0.05, max: 0.4, step: 0.005, def: 0.15 },
+  { key: 'unit', group: 'Beat', label: 'Distance per 1/16', min: 0.02, max: 0.25, step: 0.005, def: 0.1 },
+  { key: 'echoBars', group: 'Beat', label: 'Echo bars', min: 1, max: 8, step: 1, def: 4 },
+  { key: 'maxBallsPerLane', group: 'Beat', label: 'Max balls per lane', min: 1, max: 8, step: 1, def: 4 },
   { key: 'hMin', group: 'HSV threshold', label: 'Hue min', min: 0, max: 179, step: 1, def: 0 },
   { key: 'hMax', group: 'HSV threshold', label: 'Hue max', min: 0, max: 179, step: 1, def: 179 },
   { key: 'sMin', group: 'HSV threshold', label: 'Sat min', min: 0, max: 255, step: 1, def: 70 },
@@ -26,8 +31,6 @@ export const SLIDERS = [
   { key: 'missM', group: 'Tracking (anti-flicker)', label: 'Frames to remove', min: 1, max: 15, step: 1, def: 5 },
   { key: 'smooth', group: 'Tracking (anti-flicker)', label: 'Smoothing', min: 0, max: 0.9, step: 0.05, def: 0.5 },
   { key: 'matchDist', group: 'Tracking (anti-flicker)', label: 'Match distance', min: 0.01, max: 0.2, step: 0.01, def: 0.06 },
-  { key: 'ballRadius', group: 'Ball', label: 'Ball size', min: 0.003, max: 0.05, step: 0.001, def: 0.012 },
-  { key: 'ballSpeed', group: 'Ball', label: 'Ball speed (bounce)', min: 0.05, max: 1.5, step: 0.05, def: 0.45 },
   { key: 'noteShiftX', group: 'Note alignment', label: 'Shift outlines left/right', min: -0.1, max: 0.1, step: 0.001, def: 0 },
   { key: 'ballPad', group: 'Ball mask', label: 'Radius multiplier', min: 1, max: 4, step: 0.1, def: 1.8 },
   { key: 'ballLag', group: 'Ball mask', label: 'Camera lag s', min: 0, max: 0.6, step: 0.05, def: 0.25 },
@@ -37,6 +40,8 @@ export const DEFAULTS = {
   ...Object.fromEntries(SLIDERS.map((s) => [s.key, s.def])),
   deviceId: '',
   roiOnly: true, // only detect inside the calibrated projection area
+  snap: true, // round lane lengths to whole 16ths
+  outlines: false, // faint note outlines on the projector (debug)
 };
 
 export function loadSettings() {

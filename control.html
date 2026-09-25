@@ -18,12 +18,14 @@
     <button id="openProjector" title="Opens projector.html in a new window; drag it to the projector">Open projector window</button>
     <button id="calibrate" class="primary">Calibrate</button>
     <span style="width:12px"></span>
-    <button id="modeBtn" title="Drop: steer with ← →, Space drops, R resets. Bounce: balls fly around.">Mode: Drop</button>
-    <button id="runBtn" title="Start / pause the physics">Pause</button>
-    <button id="resetBall">Reset ball</button>
-    <button id="addBall">Add ball</button>
-    <button id="gravityBtn" title="Toggle gravity">Gravity</button>
-    <button id="outlinesBtn" title="Faint note outlines on the projector (debug)">Outlines</button>
+    <button id="runBtn" title="Start / stop the clock (Space)">Start</button>
+    <span class="bpm-group">
+      <button id="bpmDown" title="Tempo −2 ([, ⇧[ for −10)">−</button>
+      <span id="bpmOut" class="bpm">96 BPM</span>
+      <button id="bpmUp" title="Tempo +2 (], ⇧] for +10)">+</button>
+    </span>
+    <button id="snapBtn" title="Round lane lengths to whole 16ths (S)">Snap: on</button>
+    <label title="Faint note outlines on the projector (debug)"><input type="checkbox" id="outlines"> Outlines</label>
   </div>
 
   <div class="layout">
@@ -35,7 +37,7 @@
           <canvas class="feed" id="feed" width="1280" height="720"></canvas>
           <canvas class="magnifier" id="magnifier" width="140" height="140"></canvas>
         </div>
-        <div class="status" style="margin:6px 0">Keys (this window or the projector): ← → move the ball · Space drop · R reset · M switch drop/bounce</div>
+        <div class="status" style="margin:6px 0">Keys (this window or the projector): Space start/stop · [ ] tempo · S snap · Tab lane · B/⇧B ball · A/D nudge · E instrument · K/X/Z keep/clear/undo · 1–6 mute (⇧ solo) · R reset · ? help on the wall</div>
         <div class="row">
           <label><input type="checkbox" id="crossTest"> Crosshair test (move the mouse over the feed; a crosshair should appear at the same spot on the wall)</label>
           <button id="forgetCalib">Forget calibration</button>
@@ -61,6 +63,31 @@
           <label title="Tints projected light cyan so the ball looks like a note to the threshold - tests the ball mask"><input type="checkbox" id="simTint"> Projector colour cast</label>
         </div>
         <div class="status">Drag notes in the camera view to move them. The projector picture is mirrored onto the fake wall.</div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>Lanes <span class="h2-info" id="lanesInfo"></span></h2>
+        <table class="lanes" id="lanesTable">
+          <thead><tr><th>Lane</th><th>Target</th><th>Instrument</th><th>Rate</th><th>Balls</th><th>Blocked</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="status" id="lanesEmpty">Stick a note in the rail (the top band of the wall) to open a lane, then a note below it to hit.</div>
+        <div class="row">
+          <span class="status">Mute (click) / solo (⇧ click):</span>
+          <span id="pitchButtons" class="row" style="margin:0"></span>
+          <span class="spacer"></span>
+          <button id="resetBalls" title="One ball per lane, on the downbeat (R)">Reset balls (R)</button>
+          <button id="helpBtn" title="Show all keys on the wall (?)">Keys on wall (?)</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>Echo <span class="h2-info" id="echoInfo"></span></h2>
+        <canvas class="echo" id="echoCanvas" width="1000" height="60"></canvas>
+        <div class="row">
+          <button id="keepBtn" class="primary" title="Loop what the wall played in the last bars (K)">Keep last 4 bars (K)</button>
+          <button id="clearBtn" title="Remove all kept layers (X)">Clear kept (X)</button>
+          <button id="undoBtn" title="Remove the last kept layer (Z)">Undo keep (Z)</button>
+          <span class="status" id="layersInfo"></span>
+        </div>
       </div>
       <div class="card" style="margin-top:14px">
         <h2>Note colours <button id="resetColors" style="float:right;padding:2px 8px">Defaults</button></h2>

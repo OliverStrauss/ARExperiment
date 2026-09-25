@@ -1,31 +1,16 @@
 import { createChannel } from './channel.js';
-import { drawScene } from './render.js';
-import { PhysicsWorld } from './physics.js';
+import { drawScene, HALO_MS } from './render.js';
+import { epochNow } from './beat.js';
+import { keyAction } from './keys.js';
+
+// The projector only draws. The control window owns the notes, the beat engine
+// and the sound; balls are drawn analytically from the shared clock in the
+// 'beat' message, so no physics runs here.
 
 const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud');
 const hudStatus = document.getElementById('hudStatus');
-
-// Runtime toggles owned by the projector (so its keyboard shortcuts work too);
-// reported to the control window in every heartbeat.
-const PREFS_KEY = 'sticky-wall.projector.v1';
-const PREF_DEFAULTS = { running: true, gravity: false, dropGravity: true, outlines: false, mode: 'drop' };
-function loadPrefs() {
-  try {
-    return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') };
-  } catch {
-    return { ...PREF_DEFAULTS };
-  }
-}
-function savePrefs() {
-  try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-  } catch {
-    /* ignore */
-  }
-}
-const prefs = loadPrefs();
 
 const state = {
   w: window.innerWidth,
@@ -33,19 +18,17 @@ const state = {
   calib: false,
   cross: null,
   notes: [],
+  beat: null,
+  echo: null,
+  ring: null,
+  toast: null,
+  halos: [], // [{ noteId, color, at }]
+  hitLog: [], // epoch s when each halo started (tests)
   lastControl: 0,
   lastMouse: Date.now(),
 };
 
-const physics = new PhysicsWorld(state.w, state.h);
-physics.setConfig({ gravity: prefs.gravity, dropGravity: prefs.dropGravity, mode: prefs.mode });
-physics.resetBalls();
-
 const channel = createChannel('projector', onMessage);
-
-// Sound plays in the control window: it gets the clicks/keys browsers require
-// before audio may start, and the projector window usually never does.
-physics.onHit = (hit) => channel.send('hit', hit);
 
 function onMessage(msg) {
   state.lastControl = Date.now();
@@ -61,77 +44,38 @@ function onMessage(msg) {
       break;
     case 'notes':
       state.notes = msg.notes || [];
-      physics.setNotes(state.notes); // balls keep flying; only note bodies change
       break;
-    case 'config': {
-      const cfg = {};
-      if (msg.ballRadius !== undefined) cfg.ballRadius = msg.ballRadius;
-      if (msg.ballSpeed !== undefined) cfg.ballSpeed = msg.ballSpeed;
-      physics.setConfig(cfg);
+    case 'beat':
+      state.beat = msg;
+      break;
+    case 'echo':
+      state.echo = msg.rows ? msg : null;
+      break;
+    case 'ring':
+      state.ring = msg.open ? msg : null;
+      break;
+    case 'toast':
+      state.toast = { key: msg.key, text: msg.text, at: epochNow() };
+      break;
+    case 'hitFx': {
+      // Sent ahead of time; start the halo when the hit is heard.
+      const halo = { noteId: msg.noteId, color: msg.color, at: msg.at };
+      setTimeout(() => {
+        state.halos = state.halos.filter((h) => epochNow() - h.at < HALO_MS / 1000);
+        state.halos.push(halo);
+        state.hitLog.push(epochNow());
+        if (state.hitLog.length > 500) state.hitLog.shift();
+      }, Math.max(0, (msg.at - epochNow()) * 1000));
       break;
     }
-    case 'cmd':
-      runCommand(msg.cmd);
-      break;
-    case 'steer':
-      physics.steer(msg.dir);
-      break;
     default:
       break;
   }
 }
 
-function runCommand(cmd) {
-  switch (cmd) {
-    case 'start': prefs.running = true; break;
-    case 'pause': prefs.running = false; break;
-    case 'toggleRun': prefs.running = !prefs.running; break;
-    case 'resetBall': physics.resetBalls(); break;
-    case 'addBall': physics.addBall(); break;
-    case 'clearBalls': physics.clearBalls(); break;
-    // Gravity toggles the current mode's setting (drop and bounce each keep one).
-    case 'toggleGravity':
-      if (prefs.mode === 'drop') prefs.dropGravity = !prefs.dropGravity;
-      else prefs.gravity = !prefs.gravity;
-      physics.setConfig({ gravity: prefs.gravity, dropGravity: prefs.dropGravity });
-      break;
-    case 'toggleOutlines': prefs.outlines = !prefs.outlines; break;
-    // Space: drop the waiting ball (or bring a new one up) in drop mode,
-    // start/pause in bounce mode.
-    case 'action':
-      if (prefs.mode === 'drop') {
-        prefs.running = true;
-        if (!physics.drop()) physics.spawnHeld();
-      } else {
-        prefs.running = !prefs.running;
-      }
-      break;
-    case 'toggleMode':
-      prefs.mode = prefs.mode === 'drop' ? 'bounce' : 'drop';
-      physics.setConfig({ mode: prefs.mode });
-      break;
-    default: return;
-  }
-  savePrefs();
-  sendBalls();
-}
-
 function sayHello() {
   channel.send('hello', { w: state.w, h: state.h });
 }
-
-// ~10 Hz: ball positions (so control can mask them out of detection) + toggles.
-function sendBalls() {
-  channel.send('balls', {
-    balls: state.calib ? [] : physics.ballsNormalized(),
-    t: Date.now(),
-    running: prefs.running,
-    gravity: prefs.mode === 'drop' ? prefs.dropGravity : prefs.gravity,
-    outlines: prefs.outlines,
-    mode: prefs.mode,
-  });
-}
-setInterval(sendBalls, 100);
 
 // ---------------------------------------------------------------- sizing
 
@@ -142,7 +86,6 @@ function resize() {
   canvas.width = Math.round(state.w * dpr);
   canvas.height = Math.round(state.h * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  physics.resize(state.w, state.h);
   sayHello();
 }
 window.addEventListener('resize', resize);
@@ -172,54 +115,41 @@ function updateHud() {
 }
 setInterval(updateHud, 1000);
 
-// Arrow keys steer the waiting ball (drop mode) while held down.
-const arrows = { left: false, right: false };
-function updateSteer() {
-  physics.steer((arrows.right ? 1 : 0) - (arrows.left ? 1 : 0));
-}
+// ---------------------------------------------------------------- input
+// Keys are forwarded to the control window (it owns the beat engine); only
+// F is handled here. A click on the wall opens the instrument ring there.
+
 window.addEventListener('keydown', (e) => {
-  const k = e.key.toLowerCase();
-  if (k === 'arrowleft') arrows.left = true;
-  else if (k === 'arrowright') arrows.right = true;
-  else if (e.repeat) return;
-  else if (k === 'f') toggleFullscreen();
-  else if (k === ' ') runCommand('action');
-  else if (k === 'o') runCommand('toggleOutlines');
-  else if (k === 'g') runCommand('toggleGravity');
-  else if (k === 'b') runCommand('addBall');
-  else if (k === 'r') runCommand('resetBall');
-  else if (k === 'm') runCommand('toggleMode');
-  else return;
-  updateSteer();
-  e.preventDefault();
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = { key: e.key, code: e.code, shift: e.shiftKey, repeat: e.repeat };
+  const a = keyAction(k);
+  if (!a) return;
+  e.preventDefault(); // Tab / Space must not move focus or scroll
+  if (a.action === 'fullscreen') {
+    if (!e.repeat) toggleFullscreen();
+  } else {
+    channel.send('key', k);
+  }
 });
-window.addEventListener('keyup', (e) => {
-  const k = e.key.toLowerCase();
-  if (k === 'arrowleft') arrows.left = false;
-  else if (k === 'arrowright') arrows.right = false;
-  else return;
-  updateSteer();
-});
-window.addEventListener('blur', () => {
-  arrows.left = arrows.right = false;
-  updateSteer();
+
+canvas.addEventListener('click', (e) => {
+  channel.send('click', { x: e.clientX / state.w, y: e.clientY / state.h });
 });
 
 // ---------------------------------------------------------------- render loop
 
-let last = performance.now();
-
-function frame(now) {
-  const dt = now - last;
-  last = now;
-  // Physics is frozen while calibrating so a ball can't cover a dot.
-  if (prefs.running && !state.calib) physics.step(dt);
+function frame() {
   drawScene(ctx, state.w, state.h, {
     calib: state.calib,
     cross: state.cross,
     notes: state.notes,
-    outlines: prefs.outlines,
-    balls: state.calib ? [] : physics.ballsNormalized(),
+    outlines: state.beat?.outlines,
+    beat: state.beat,
+    echo: state.echo,
+    ring: state.ring,
+    toast: state.toast,
+    halos: state.halos,
+    now: epochNow(),
   });
   requestAnimationFrame(frame);
 }
@@ -228,7 +158,7 @@ function frame(now) {
 setInterval(sayHello, 1000);
 
 // Exposed for tests / debugging from the devtools console.
-window.stickyWall = { state, prefs, physics };
+window.stickyWall = { state };
 
 resize();
 updateHud();

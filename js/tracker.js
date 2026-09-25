@@ -4,10 +4,10 @@
 // coordinates. A track is only reported ("confirmed") after it was seen in
 // `seenN` consecutive detection rounds, and only dropped after it was missing
 // for `missM` rounds, so a hand passing by or a noisy frame doesn't make notes
-// flicker in and out of the physics world.
+// flicker in and out of the lanes.
 //
 // Reported corners only change when they moved more than `deadband`, so tiny
-// detection jitter doesn't make the projector rebuild note bodies constantly.
+// detection jitter doesn't make lanes change length constantly.
 
 export const TRACKER_DEFAULTS = {
   seenN: 3, // rounds a new note must be seen before it is added

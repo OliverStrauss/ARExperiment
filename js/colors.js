@@ -6,18 +6,26 @@
 // "teach" each colour by clicking a real note; that palette replaces these.
 
 export const NOTE_COLORS = [
-  { name: 'purple', rgb: [150, 90, 220], freq: 261.63 }, // C4
-  { name: 'blue', rgb: [80, 190, 245], freq: 293.66 }, // D4
-  { name: 'green', rgb: [120, 225, 90], freq: 329.63 }, // E4
-  { name: 'yellow', rgb: [250, 228, 70], freq: 392.0 }, // G4
-  { name: 'orange', rgb: [255, 150, 60], freq: 440.0 }, // A4
-  { name: 'red', rgb: [240, 60, 70], freq: 523.25 }, // C5
+  { name: 'purple', rgb: [150, 90, 220], freq: 261.63, pitch: 'C4' },
+  { name: 'blue', rgb: [80, 190, 245], freq: 293.66, pitch: 'D4' },
+  { name: 'green', rgb: [120, 225, 90], freq: 329.63, pitch: 'E4' },
+  { name: 'yellow', rgb: [250, 228, 70], freq: 392.0, pitch: 'G4' },
+  { name: 'orange', rgb: [255, 150, 60], freq: 440.0, pitch: 'A4' },
+  { name: 'red', rgb: [240, 60, 70], freq: 523.25, pitch: 'C5' },
 ];
 
 export const DEFAULT_PALETTE = Object.fromEntries(NOTE_COLORS.map((c) => [c.name, c.rgb]));
 
 export function freqOf(name) {
   return NOTE_COLORS.find((c) => c.name === name)?.freq;
+}
+
+export function pitchOf(name) {
+  return NOTE_COLORS.find((c) => c.name === name)?.pitch;
+}
+
+export function rgbOf(name) {
+  return NOTE_COLORS.find((c) => c.name === name)?.rgb ?? [255, 255, 255];
 }
 
 // Hue in degrees [0, 360).

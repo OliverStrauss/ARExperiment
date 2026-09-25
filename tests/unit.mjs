@@ -6,6 +6,10 @@ import { NoteTracker, canonicalCorners, centroid } from '../js/tracker.js';
 import { solveHomography, applyH, invertH, isConvexQuad } from '../js/homography.js';
 import { snapToDot } from '../js/calibration.js';
 import { NOTE_COLORS, classifyColor } from '../js/colors.js';
+import { buildLanes, spanAt, rateLabel, noteAt } from '../js/lanes.js';
+import { InstrumentRing } from '../js/ring.js';
+import { INSTRUMENTS } from '../js/instruments.js';
+import { BeatEngine, ballProgress, ballY, clockPos } from '../js/beat.js';
 
 const require = createRequire(import.meta.url);
 let failed = 0;
@@ -146,6 +150,307 @@ test('pitches: purple lowest ... red highest', () => {
   assert.ok(f.every((x, i) => i === 0 || x > f[i - 1]));
 });
 
+// ------------------------------------------------------------------ lanes
+
+// A note as a box: centre x, top y, half-size (so the top edge is exact).
+const box = (id, cx, top, color = 'green', s = 0.03) => ({ id, color, corners: square(cx, top + s, s) });
+
+test('lanes: a note inside the rail opens a lane, others do not', () => {
+  const lanes = buildLanes([box(1, 0.3, 0.02), box(2, 0.6, 0.4)], { railBottom: 0.15 });
+  assert.equal(lanes.length, 1);
+  assert.equal(lanes[0].id, 1);
+  close(lanes[0].x, 0.3, 1e-9, 'lane x = rail note centre');
+});
+
+test('lanes: target is the first note below the rail on the centre line', () => {
+  const notes = [box(1, 0.5, 0.02), box(2, 0.5, 0.6), box(3, 0.51, 0.35), box(4, 0.8, 0.2)];
+  const [lane] = buildLanes(notes, { railBottom: 0.15, unit: 0.1 });
+  assert.equal(lane.targetId, 3);
+  close(lane.top, 0.35, 1e-9, 'top edge');
+  close(lane.d, 0.2, 1e-9, 'd');
+  assert.deepEqual(lane.shadowed, [2], 'lower note in the lane is shadowed');
+});
+
+test('lanes: no note under the rail note -> idle lane', () => {
+  const [lane] = buildLanes([box(1, 0.2, 0.02), box(2, 0.7, 0.5)]);
+  assert.equal(lane.targetId, null);
+  assert.equal(lane.n, null);
+});
+
+test('lanes: tilted target uses the top edge where it crosses the centre line', () => {
+  const tilted = { id: 2, color: 'red', corners: [[0.4, 0.5], [0.6, 0.6], [0.6, 0.65], [0.4, 0.55]] };
+  const [lane] = buildLanes([box(1, 0.5, 0.02), tilted], { railBottom: 0.15 });
+  close(lane.top, 0.55, 1e-9, 'top at x=0.5');
+  close(spanAt(tilted.corners, 0.5)[1], 0.6, 1e-9, 'bottom at x=0.5');
+});
+
+test('lanes: n rounds with Snap on, stays fractional with Snap off, min 1', () => {
+  const notes = (top) => [box(1, 0.5, 0.02), box(2, 0.5, top)];
+  const at = (top, snap) => buildLanes(notes(top), { railBottom: 0.15, unit: 0.1, snap })[0].n;
+  assert.equal(at(0.15 + 0.37, true), 4);
+  assert.equal(at(0.15 + 0.33, true), 3);
+  close(at(0.15 + 0.37, false), 3.7, 1e-9, 'snap off');
+  assert.equal(at(0.16, true), 1, 'very small d clamps to 1');
+});
+
+test('lanes: width is the rail note width, clamped to 2 ball diameters', () => {
+  const wide = buildLanes([box(1, 0.5, 0.02, 'blue', 0.05)], { minWidth: 0.04 })[0];
+  close(wide.w, 0.1, 1e-9, 'rail note width');
+  const narrow = buildLanes([box(1, 0.5, 0.02, 'blue', 0.01)], { minWidth: 0.04 })[0];
+  close(narrow.w, 0.04, 1e-9, 'clamped');
+});
+
+test('lanes: sorted left to right, overlapping lanes allowed, nudge offsets x', () => {
+  const notes = [box(7, 0.6, 0.02), box(8, 0.3, 0.02), box(9, 0.61, 0.03), box(2, 0.6, 0.5)];
+  const lanes = buildLanes(notes, { offsets: { 8: 0.005 } });
+  assert.deepEqual(lanes.map((l) => l.id), [8, 7, 9]);
+  close(lanes[0].x, 0.305, 1e-9, 'nudged');
+  assert.equal(lanes[1].targetId, 2);
+  assert.equal(lanes[2].targetId, 2, 'two lanes can share a target');
+});
+
+test('lanes: rate labels', () => {
+  assert.deepEqual([1, 2, 3, 4, 6, 8, 16, 32].map((n) => rateLabel(n)), ['1/16', '1/8', '3/16', '1/4', '3/8', '1/2', '1', '2']);
+  assert.equal(rateLabel(5.9, false), '≈0.37');
+  assert.equal(rateLabel(null), '—');
+});
+
+// ------------------------------------------------------------------ beat engine
+
+// One lane with a target n 16ths below the rail.
+function laneN(n, id = 1, color = 'green', targetId = 10) {
+  return { id, x: 0.5, w: 0.05, railNoteBottom: 0.1, targetId, color, top: 0.15 + n * 0.1, d: n * 0.1, n, shadowed: [] };
+}
+
+// Run the scheduler for `secs` with 25 ms ticks; returns all hits.
+function run(engine, t0, secs) {
+  const hits = [];
+  for (let t = t0; t < t0 + secs; t += 0.025) hits.push(...engine.tick(t));
+  return hits;
+}
+
+test('beat: at 96 BPM a lane with n = 4 hits exactly 0.625 s apart, each hit once', () => {
+  const e = new BeatEngine({ bpm: 96 });
+  e.setLanes([laneN(4)]);
+  e.start(100);
+  const hits = run(e, 100, 5);
+  assert.ok(hits.length >= 7, `hits: ${hits.length}`);
+  close(hits[0].time, 100, 1e-9, 'first hit on the downbeat');
+  hits.slice(1).forEach((h, i) => close(h.time - hits[i].time, 0.625, 1e-9, 'interval'));
+  assert.equal(new Set(hits.map((h) => h.pos)).size, hits.length, 'no duplicates');
+  assert.equal(hits[0].noteId, 10);
+  assert.equal(hits[0].instrument, 'bell');
+});
+
+test('beat: two balls give the union of both phase grids', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes([laneN(4)]);
+  e.start(0);
+  e.tick(0);
+  // at pos 1 (1/16 in), drop a second ball: it hits n/2 = 2 16ths later, at pos 3
+  const t1 = e.timeAt(1);
+  const b = e.addBall(1, t1);
+  assert.equal(b.phase, 3);
+  const hits = run(e, t1, 4).map((h) => h.pos);
+  const grid = hits.filter((p) => p % 4 === 0);
+  const off = hits.filter((p) => p % 4 === 3);
+  assert.equal(grid.length + off.length, hits.length);
+  assert.ok(grid.length >= 7 && off.length >= 7, `${grid.length} + ${off.length}`);
+  assert.equal(e.removeBall(1), true);
+  assert.equal(e.removeBall(1), false, 'a lane keeps at least one ball');
+});
+
+test('beat: max balls per lane, reset brings one ball back on the downbeat', () => {
+  const e = new BeatEngine({ maxBallsPerLane: 3 });
+  e.setLanes([laneN(4)]);
+  assert.ok(e.addBall(1, 0.3));
+  assert.ok(e.addBall(1, 0.7));
+  assert.equal(e.addBall(1, 0.9), null);
+  e.resetBalls();
+  assert.equal(e.ballsOf(1).length, 1);
+  assert.equal(e.ballsOf(1)[0].phase, 0);
+});
+
+test('beat: tempo change keeps phase continuity', () => {
+  const e = new BeatEngine({ bpm: 96 });
+  e.setLanes([laneN(2)]);
+  e.start(10);
+  const before = run(e, 10, 2);
+  const t = 12.01;
+  const p = e.pos(t);
+  e.setBpm(120, t);
+  close(e.pos(t), p, 1e-9, 'pos continuous across the change');
+  const after = run(e, t, 2);
+  assert.ok(after[0].pos > before.at(-1).pos, 'no hit repeated or lost');
+  close(after[0].pos - before.at(-1).pos, 2, 1e-9, 'next hit one lane length later');
+  after.slice(1).forEach((h, i) => close(h.time - after[i].time, 2 * (60 / 120 / 4), 1e-9, 'new interval'));
+});
+
+test('beat: stopped clock schedules nothing and holds its position', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.start(0);
+  run(e, 0, 1);
+  e.stop(1);
+  const p = e.pos(1);
+  assert.equal(e.tick(1.5).length, 0);
+  close(e.pos(9), p, 1e-9, 'frozen');
+  e.start(9);
+  close(e.pos(9), p, 1e-9, 'resumes where it stopped');
+});
+
+test('beat: mute and solo filter hits by colour', () => {
+  const e = new BeatEngine({ bpm: 120 });
+  e.setLanes([laneN(4, 1, 'green', 10), laneN(4, 2, 'red', 11)]);
+  e.start(0);
+  let t = 0;
+  const colors = () => new Set(run(e, (t += 1) - 1, 1).map((h) => h.color));
+  assert.deepEqual([...colors()].sort(), ['green', 'red']);
+  e.toggleMute('red');
+  assert.deepEqual([...colors()], ['green']);
+  e.toggleSolo('red');
+  assert.deepEqual([...colors()], ['red'], 'solo wins over mute');
+  e.toggleSolo('red');
+  e.toggleMute('red');
+  assert.equal(colors().size, 2);
+});
+
+test('beat: idle lanes are silent; lanes keep balls until their rail note goes', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.addBall(1, 0.5);
+  e.setLanes([{ ...laneN(4), targetId: null, n: null, top: null, d: null }]);
+  e.start(0);
+  assert.equal(run(e, 0, 2).length, 0);
+  assert.equal(e.ballsOf(1).length, 2, 'balls kept while idle');
+  e.setLanes([laneN(4)]);
+  assert.ok(run(e, 2, 2).length > 0, 'resumes when a target appears');
+  e.setLanes([]);
+  assert.equal(e.ballsOf(1).length, 0, 'rail note removed -> balls gone');
+});
+
+test('beat: instruments stored by note id, forgotten when the note goes', () => {
+  const e = new BeatEngine();
+  e.setLanes([laneN(4)]);
+  e.setInstrument(10, 'kick');
+  e.start(0);
+  assert.equal(e.tick(0)[0].instrument, 'kick');
+  e.pruneInstruments([1, 2]);
+  assert.equal(e.instrumentOf(10), 'bell');
+});
+
+test('beat: ball goes rail -> target -> rail, touching the target on a hit', () => {
+  const lane = laneN(4);
+  assert.equal(ballProgress(0, 0, 4), 1);
+  assert.equal(ballProgress(2, 0, 4), 0);
+  close(ballProgress(1, 0, 4), 0.5, 1e-9, 'halfway');
+  close(ballY(lane, 0, 8, 0.15, 0.02), lane.top - 0.02, 1e-9, 'touches the top edge');
+  close(ballY(lane, 0, 10, 0.15, 0.02), 0.15, 1e-9, 'back at the rail');
+  const idle = { ...lane, n: null, top: null };
+  close(ballY(idle, 0, 3, 0.15, 0.02), 0.15, 1e-9, 'idle: waits at the rail');
+  const clock = { running: true, bpm: 60, anchor: 5, pos0: 8 };
+  close(clockPos(clock, 6), 12, 1e-9, '60 bpm = 4 16ths per second');
+});
+
+// ------------------------------------------------------------------ echo + layers
+
+test('echo: hits land on the correct 1/16 step, highest pitch first', () => {
+  const e = new BeatEngine({ bpm: 120, echoBars: 4 });
+  e.setLanes([laneN(4, 1, 'green', 10), laneN(3, 2, 'red', 11)]);
+  e.start(0);
+  run(e, 0, 2); // 2 s at 120 BPM = 16 16ths
+  const v = e.echoView(2);
+  assert.equal(v.bars, 4);
+  assert.equal(v.playheadStep, 16);
+  assert.deepEqual(v.rows.map((r) => r.pitch), ['C5', 'E4']);
+  assert.deepEqual(v.rows[1].hits.map((h) => h.step), [0, 4, 8, 12, 16]);
+  assert.deepEqual(v.rows[0].hits.map((h) => h.step), [0, 3, 6, 9, 12, 15]);
+  assert.ok(v.rows.every((r) => r.hits.every((h) => !h.kept)));
+});
+
+test('echo: Keep snapshots, layers replay on the next loop, Undo pops, Clear empties', () => {
+  const e = new BeatEngine({ bpm: 120, echoBars: 1 }); // 16-step loop = 2 s
+  e.setLanes([laneN(4, 1, 'green', 10)]);
+  e.start(0);
+  run(e, 0, 2.05);
+  const layer = e.keep();
+  assert.ok(layer, 'kept');
+  assert.equal(layer.L, 16);
+  assert.deepEqual(layer.events.map((ev) => ev.step).sort((a, b) => a - b), [0, 4, 8, 12]);
+  // the wall's note goes away: only the layer plays now
+  e.setLanes([]);
+  const replay = run(e, 2.05, 4);
+  assert.ok(replay.length >= 7 && replay.every((h) => h.kept), `${replay.length} kept hits`);
+  assert.deepEqual([...new Set(replay.map((h) => ((h.pos % 16) + 16) % 16))].sort((a, b) => a - b), [0, 4, 8, 12]);
+  assert.equal(new Set(replay.map((h) => h.pos)).size, replay.length, 'each step once per loop');
+  assert.ok(e.echoView(6).rows[0].hits.every((h) => h.kept), 'echo shows kept hits');
+  e.setLanes([laneN(2, 1, 'red', 11)]);
+  run(e, 6.05, 2);
+  assert.ok(e.keep());
+  assert.equal(e.layers.length, 2);
+  e.undoKeep();
+  assert.equal(e.layers.length, 1);
+  assert.equal(e.clearLayers(), 1);
+  assert.equal(e.layers.length, 0);
+  e.setLanes([]);
+  assert.equal(run(e, 8.1, 2).length, 0, 'nothing left to play');
+});
+
+test('echo: Keep with nothing played keeps nothing; muted hits are not recorded', () => {
+  const e = new BeatEngine({ bpm: 120, echoBars: 1 });
+  e.setLanes([laneN(4, 1, 'green', 10)]);
+  assert.equal(e.keep(), null);
+  e.toggleMute('green');
+  e.start(0);
+  run(e, 0, 2);
+  assert.equal(e.keep(), null);
+});
+
+// ------------------------------------------------------------------ instrument ring
+
+test('ring: spin wraps around both ways', () => {
+  const r = new InstrumentRing(INSTRUMENTS, 4);
+  r.open(5, 'bell', 0);
+  assert.equal(r.spin(-1, 1), 'tom');
+  assert.equal(r.spin(1, 1), 'bell');
+  for (let i = 0; i < INSTRUMENTS.length; i++) r.spin(1, 1);
+  assert.equal(r.current, 'bell', 'a full turn comes back');
+});
+
+test('ring: commit stores the instrument by note id; Esc leaves it unchanged', () => {
+  const e = new BeatEngine();
+  const r = new InstrumentRing();
+  r.open(7, e.instrumentOf(7), 0);
+  r.spin(1, 0);
+  r.spin(1, 0);
+  const res = r.commit();
+  e.setInstrument(res.noteId, res.instrument);
+  assert.equal(e.instrumentOf(7), 'marimba');
+  assert.equal(r.isOpen, false);
+  r.open(7, e.instrumentOf(7), 0);
+  assert.equal(r.current, 'marimba', 'opens on the current choice');
+  r.spin(1, 0);
+  r.cancel();
+  assert.equal(r.commit(), null);
+  assert.equal(e.instrumentOf(7), 'marimba');
+});
+
+test('ring: commits by itself after 4 s idle; spinning restarts the countdown', () => {
+  const r = new InstrumentRing(INSTRUMENTS, 4);
+  r.open(1, 'bell', 10);
+  assert.equal(r.expired(13.9), false);
+  r.spin(1, 13);
+  assert.equal(r.expired(16.9), false);
+  assert.equal(r.expired(17), true);
+});
+
+test('ring: clicks hit notes but never rail notes', () => {
+  const notes = [box(1, 0.5, 0.02), box(2, 0.5, 0.5)];
+  assert.equal(noteAt(notes, [0.5, 0.52], 0.15)?.id, 2);
+  assert.equal(noteAt(notes, [0.5, 0.05], 0.15), null, 'rail note');
+  assert.equal(noteAt(notes, [0.9, 0.9], 0.15), null, 'empty wall');
+});
+
 // ------------------------------------------------------------------ homography
 
 const QUAD = [
@@ -239,133 +544,6 @@ test('snapToDot: ignores the calibration border (too big / touches edge)', () =>
 test('snapToDot: no contrast -> null', () => {
   const img = fakeImage(40, 40, () => 90);
   assert.equal(snapToDot(img, 0, 0, [20, 20], 400), null);
-});
-
-// ------------------------------------------------------------------ physics
-
-async function physicsWorld(w, h) {
-  globalThis.window = { Matter: require('../vendor/matter.min.js') };
-  const { PhysicsWorld } = await import('../js/physics.js');
-  return new PhysicsWorld(w, h);
-}
-
-const NOTE = { id: 1, corners: [[0.4, 0.4], [0.5, 0.4], [0.5, 0.55], [0.4, 0.55]] };
-
-test('physics: ball keeps a constant speed and never enters a note', async () => {
-  const pw = await physicsWorld(1920, 1080);
-  pw.setNotes([NOTE]);
-  pw.addBall({ x: 200, y: 200 });
-  const target = 0.45 * 1920;
-  for (let i = 0; i < 60 * 60; i++) {
-    pw.step(1000 / 60);
-    const [b] = pw.ballsNormalized();
-    assert.ok(!(b.x > 0.4 && b.x < 0.5 && b.y > 0.4 && b.y < 0.55), 'ball inside note');
-    assert.ok(b.x > 0 && b.x < 1 && b.y > 0 && b.y < 1, 'ball left the screen');
-    if (i % 100 === 0) close(Math.hypot(b.vx * 1920, b.vy * 1080), target, 1, 'speed');
-  }
-});
-
-test('physics: updating notes keeps the ball; a note spawned on it evicts it', async () => {
-  const pw = await physicsWorld(1600, 900);
-  pw.setNotes([NOTE]);
-  const ball = pw.addBall({ x: 800, y: 200 });
-  const bx = 0.5;
-  const by = 200 / 900;
-  pw.setNotes([NOTE, { id: 2, corners: square(bx, by, 0.06) }]);
-  assert.equal(pw.balls[0], ball, 'same ball body');
-  const [b] = pw.ballsNormalized();
-  const inside = Math.abs(b.x - bx) < 0.06 && Math.abs(b.y - by) < 0.06;
-  assert.equal(inside, false, 'ball evicted from the new note');
-  pw.setNotes([]);
-  assert.equal(pw.notes.size, 0);
-  assert.equal(pw.balls[0], ball);
-});
-
-test('physics: resize keeps balls and notes', async () => {
-  const pw = await physicsWorld(1920, 1080);
-  pw.setNotes([NOTE]);
-  pw.addBall();
-  pw.addBall();
-  pw.resize(1280, 720);
-  assert.equal(pw.balls.length, 2);
-  assert.equal(pw.notes.size, 1);
-});
-
-test('physics: drop mode - ball waits at the top, steers, drops, resets', async () => {
-  const pw = await physicsWorld(1600, 900);
-  pw.setConfig({ mode: 'drop' });
-  assert.equal(pw.balls.length, 1);
-  let [b] = pw.ballsNormalized();
-  assert.equal(b.held, true);
-  const y0 = b.y;
-  for (let i = 0; i < 60; i++) pw.step(1000 / 60); // 1 s: gravity must not pull it down
-  [b] = pw.ballsNormalized();
-  close(b.y, y0, 1e-9, 'held ball stays put');
-  pw.steer(1);
-  for (let i = 0; i < 30; i++) pw.step(1000 / 60);
-  pw.steer(0);
-  const [moved] = pw.ballsNormalized();
-  assert.ok(moved.x > b.x + 0.2, `steered right (${b.x.toFixed(2)} -> ${moved.x.toFixed(2)})`);
-  assert.equal(pw.drop(), true);
-  for (let i = 0; i < 60; i++) pw.step(1000 / 60);
-  const [fallen] = pw.ballsNormalized();
-  assert.equal(fallen.held, false);
-  assert.ok(fallen.y > 0.5, 'ball fell');
-  pw.resetBalls();
-  assert.equal(pw.balls.length, 1);
-  assert.equal(pw.ballsNormalized()[0].held, true);
-});
-
-test('physics: zero-g drop - ball stays in its column and hits a tilted note on a steady beat', async () => {
-  const pw = await physicsWorld(1600, 900);
-  const hits = [];
-  let t = 0;
-  pw.onHit = () => hits.push(t);
-  pw.setConfig({ mode: 'drop', dropGravity: false });
-  assert.equal(pw.engine.gravity.y, 0);
-  pw.setNotes([{ id: 1, corners: [[0.4, 0.58], [0.6, 0.62], [0.6, 0.64], [0.4, 0.60]] }]); // tilted shelf
-  pw.drop(); // held ball at x = 0.5
-  for (let i = 0; i < 60 * 12; i++, t += 1000 / 60) pw.step(1000 / 60);
-  const [b] = pw.ballsNormalized();
-  close(b.x, 0.5, 1e-6, 'still in its column');
-  assert.ok(hits.length >= 4, `hits: ${hits.length}`);
-  const gaps = hits.slice(1).map((h, i) => h - hits[i]);
-  const spread = Math.max(...gaps) - Math.min(...gaps);
-  assert.ok(spread <= 1000 / 60 + 1, `steady beat (gaps ${gaps.map(Math.round)} ms)`);
-  pw.setConfig({ dropGravity: true });
-  assert.equal(pw.engine.gravity.y, 1);
-});
-
-test('physics: dropped ball lands on a note instead of falling through', async () => {
-  const pw = await physicsWorld(1600, 900);
-  pw.setConfig({ mode: 'drop' });
-  pw.setNotes([{ id: 1, corners: [[0.4, 0.6], [0.6, 0.6], [0.6, 0.62], [0.4, 0.62]] }]); // a shelf
-  pw.drop(); // held ball starts at x = 0.5
-  let minVy = Infinity;
-  for (let i = 0; i < 240; i++) {
-    pw.step(1000 / 60);
-    minVy = Math.min(minVy, pw.ballsNormalized()[0].vy);
-  }
-  const [b] = pw.ballsNormalized();
-  assert.ok(b.y < 0.6, `ball rests on the shelf (y=${b.y.toFixed(3)})`);
-  assert.ok(minVy < 0, 'ball bounced up at least once');
-});
-
-test('physics: a ball hitting a note reports that note\'s colour', async () => {
-  const pw = await physicsWorld(1600, 900);
-  const hits = [];
-  pw.onHit = (h) => hits.push(h);
-  pw.setConfig({ mode: 'drop' });
-  pw.setNotes([{ id: 7, color: 'green', corners: [[0.4, 0.6], [0.6, 0.6], [0.6, 0.62], [0.4, 0.62]] }]);
-  pw.drop();
-  for (let i = 0; i < 240; i++) pw.step(1000 / 60);
-  assert.ok(hits.length >= 1, 'at least one hit');
-  assert.equal(hits[0].id, 7);
-  assert.equal(hits[0].color, 'green');
-  assert.ok(hits[0].strength > 0.1 && hits[0].strength <= 1, `strength ${hits[0].strength}`);
-  assert.ok(hits.length < 15, `settling ball doesn't spam hits (${hits.length})`);
-  pw.setNotes([{ id: 7, color: 'red', corners: [[0.4, 0.6], [0.6, 0.6], [0.6, 0.62], [0.4, 0.62]] }]);
-  assert.equal(pw.notes.get(7).color, 'red', 'colour updates without a shape change');
 });
 
 // ------------------------------------------------------------------ runner

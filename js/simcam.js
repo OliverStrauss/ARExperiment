@@ -10,6 +10,7 @@
 import { solveHomography, applyH, invertH, multiplyH } from './homography.js';
 import { drawScene, CALIB_DOTS } from './render.js';
 import { NOTE_COLORS } from './colors.js';
+import { pointInPoly } from './lanes.js';
 
 const W = 1280;
 const H = 720;
@@ -56,16 +57,6 @@ export function noteCorners(n) {
     [s, s],
     [-s, s],
   ].map(([x, y]) => [(n.cx * VW + x * c - y * si) / VW, (n.cy * VH + x * si + y * c) / VH]);
-}
-
-function pointInPoly([x, y], poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i];
-    const [xj, yj] = poly[j];
-    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
 }
 
 export class SimCamera {
@@ -164,6 +155,12 @@ export class SimCamera {
 
   removeNote() {
     this.notes.pop();
+    this.dirty = true;
+  }
+
+  /** Replace the wall: [{ cx, cy, color: name, angle?: deg, size?: px at 1600x900 }] */
+  setNotes(list) {
+    this.notes = list.map((n) => makeNote(n.cx, n.cy, n.angle || 0, NOTE_COLORS.findIndex((c) => c.name === n.color), n.size));
     this.dirty = true;
   }
 
