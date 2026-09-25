@@ -6,6 +6,7 @@ import { NoteTracker, canonicalCorners, centroid } from '../js/tracker.js';
 import { solveHomography, applyH, invertH, isConvexQuad } from '../js/homography.js';
 import { snapToDot } from '../js/calibration.js';
 import { NOTE_COLORS, classifyColor } from '../js/colors.js';
+import { buildLanes, spanAt, rateLabel } from '../js/lanes.js';
 
 const require = createRequire(import.meta.url);
 let failed = 0;
@@ -144,6 +145,71 @@ test('pitches: purple lowest ... red highest', () => {
   const f = NOTE_COLORS.map((c) => c.freq);
   assert.deepEqual(NOTE_COLORS.map((c) => c.name), ['purple', 'blue', 'green', 'yellow', 'orange', 'red']);
   assert.ok(f.every((x, i) => i === 0 || x > f[i - 1]));
+});
+
+// ------------------------------------------------------------------ lanes
+
+// A note as a box: centre x, top y, half-size (so the top edge is exact).
+const box = (id, cx, top, color = 'green', s = 0.03) => ({ id, color, corners: square(cx, top + s, s) });
+
+test('lanes: a note inside the rail opens a lane, others do not', () => {
+  const lanes = buildLanes([box(1, 0.3, 0.02), box(2, 0.6, 0.4)], { railBottom: 0.15 });
+  assert.equal(lanes.length, 1);
+  assert.equal(lanes[0].id, 1);
+  close(lanes[0].x, 0.3, 1e-9, 'lane x = rail note centre');
+});
+
+test('lanes: target is the first note below the rail on the centre line', () => {
+  const notes = [box(1, 0.5, 0.02), box(2, 0.5, 0.6), box(3, 0.51, 0.35), box(4, 0.8, 0.2)];
+  const [lane] = buildLanes(notes, { railBottom: 0.15, unit: 0.1 });
+  assert.equal(lane.targetId, 3);
+  close(lane.top, 0.35, 1e-9, 'top edge');
+  close(lane.d, 0.2, 1e-9, 'd');
+  assert.deepEqual(lane.shadowed, [2], 'lower note in the lane is shadowed');
+});
+
+test('lanes: no note under the rail note -> idle lane', () => {
+  const [lane] = buildLanes([box(1, 0.2, 0.02), box(2, 0.7, 0.5)]);
+  assert.equal(lane.targetId, null);
+  assert.equal(lane.n, null);
+});
+
+test('lanes: tilted target uses the top edge where it crosses the centre line', () => {
+  const tilted = { id: 2, color: 'red', corners: [[0.4, 0.5], [0.6, 0.6], [0.6, 0.65], [0.4, 0.55]] };
+  const [lane] = buildLanes([box(1, 0.5, 0.02), tilted], { railBottom: 0.15 });
+  close(lane.top, 0.55, 1e-9, 'top at x=0.5');
+  close(spanAt(tilted.corners, 0.5)[1], 0.6, 1e-9, 'bottom at x=0.5');
+});
+
+test('lanes: n rounds with Snap on, stays fractional with Snap off, min 1', () => {
+  const notes = (top) => [box(1, 0.5, 0.02), box(2, 0.5, top)];
+  const at = (top, snap) => buildLanes(notes(top), { railBottom: 0.15, unit: 0.1, snap })[0].n;
+  assert.equal(at(0.15 + 0.37, true), 4);
+  assert.equal(at(0.15 + 0.33, true), 3);
+  close(at(0.15 + 0.37, false), 3.7, 1e-9, 'snap off');
+  assert.equal(at(0.16, true), 1, 'very small d clamps to 1');
+});
+
+test('lanes: width is the rail note width, clamped to 2 ball diameters', () => {
+  const wide = buildLanes([box(1, 0.5, 0.02, 'blue', 0.05)], { minWidth: 0.04 })[0];
+  close(wide.w, 0.1, 1e-9, 'rail note width');
+  const narrow = buildLanes([box(1, 0.5, 0.02, 'blue', 0.01)], { minWidth: 0.04 })[0];
+  close(narrow.w, 0.04, 1e-9, 'clamped');
+});
+
+test('lanes: sorted left to right, overlapping lanes allowed, nudge offsets x', () => {
+  const notes = [box(7, 0.6, 0.02), box(8, 0.3, 0.02), box(9, 0.61, 0.03), box(2, 0.6, 0.5)];
+  const lanes = buildLanes(notes, { offsets: { 8: 0.005 } });
+  assert.deepEqual(lanes.map((l) => l.id), [8, 7, 9]);
+  close(lanes[0].x, 0.305, 1e-9, 'nudged');
+  assert.equal(lanes[1].targetId, 2);
+  assert.equal(lanes[2].targetId, 2, 'two lanes can share a target');
+});
+
+test('lanes: rate labels', () => {
+  assert.deepEqual([1, 2, 3, 4, 6, 8, 16, 32].map((n) => rateLabel(n)), ['1/16', '1/8', '3/16', '1/4', '3/8', '1/2', '1', '2']);
+  assert.equal(rateLabel(5.9, false), '≈0.37');
+  assert.equal(rateLabel(null), '—');
 });
 
 // ------------------------------------------------------------------ homography
