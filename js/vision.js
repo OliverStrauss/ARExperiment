@@ -5,6 +5,10 @@
 // video.videoHeight). Internally the frame is downscaled to params.procWidth
 // for speed and results are scaled back up.
 
+const V_FLOOR = 25; // adaptive mode: below this the camera is just noise
+const BG_W = 96; // wall-colour estimate is computed at this width...
+const BG_K = 41; // ...with this median kernel (~40% of the frame width)
+
 export class Detector {
   constructor(cv) {
     this.cv = cv;
@@ -25,6 +29,31 @@ export class Detector {
       this.cacheKey[name] = key;
     }
     return this.cache[name];
+  }
+
+  // Lighting-tolerant "is this pixel more colourful than the wall around it".
+  // Estimates the wall colour as a heavy median blur of the a/b (Lab) channels on a
+  // tiny copy of the frame (notes are small, so the median ignores them), then keeps
+  // pixels whose chroma differs from that by > thresh. Lab a/b barely change with
+  // brightness, and subtracting the local wall removes gradients and colour casts.
+  _chromaMask(rgb, pw, ph, thresh, track) {
+    const cv = this.cv;
+    const lab = track(new cv.Mat());
+    cv.cvtColor(rgb, lab, cv.COLOR_RGB2Lab);
+    const small = track(new cv.Mat());
+    cv.resize(lab, small, new cv.Size(BG_W, Math.max(1, Math.round((BG_W * ph) / pw))), 0, 0, cv.INTER_AREA);
+    cv.medianBlur(small, small, BG_K);
+    const bg = track(new cv.Mat());
+    cv.resize(small, bg, new cv.Size(pw, ph), 0, 0, cv.INTER_LINEAR);
+    const diff = track(new cv.Mat());
+    cv.absdiff(lab, bg, diff);
+    const ch = track(new cv.MatVector());
+    cv.split(diff, ch);
+    const sum = track(new cv.Mat());
+    cv.add(ch.get(1), ch.get(2), sum); // |da| + |db|
+    const out = track(new cv.Mat());
+    cv.threshold(sum, out, thresh, 255, cv.THRESH_BINARY);
+    return out;
   }
 
   /**
@@ -59,22 +88,29 @@ export class Detector {
       cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
 
       // --- HSV threshold. hMin > hMax means "wrap around" (for reds).
+      // With localChroma on, absolute S/V floors are dropped (they are what
+      // breaks under shadow / dim light) and the local-chroma test below takes over.
+      const adaptive = params.localChroma > 0;
+      const sMin = adaptive ? 0 : params.sMin;
+      const vMin = adaptive ? V_FLOOR : params.vMin;
       const mask = track(new cv.Mat());
       const T = cv.CV_8UC3;
       if (params.hMin <= params.hMax) {
-        const lo = this._const('lo', ph, pw, T, [params.hMin, params.sMin, params.vMin, 0]);
+        const lo = this._const('lo', ph, pw, T, [params.hMin, sMin, vMin, 0]);
         const hi = this._const('hi', ph, pw, T, [params.hMax, params.sMax, params.vMax, 0]);
         cv.inRange(hsv, lo, hi, mask);
       } else {
-        const lo1 = this._const('lo', ph, pw, T, [params.hMin, params.sMin, params.vMin, 0]);
+        const lo1 = this._const('lo', ph, pw, T, [params.hMin, sMin, vMin, 0]);
         const hi1 = this._const('hi', ph, pw, T, [179, params.sMax, params.vMax, 0]);
-        const lo2 = this._const('lo2', ph, pw, T, [0, params.sMin, params.vMin, 0]);
+        const lo2 = this._const('lo2', ph, pw, T, [0, sMin, vMin, 0]);
         const hi2 = this._const('hi2', ph, pw, T, [params.hMax, params.sMax, params.vMax, 0]);
         const m2 = track(new cv.Mat());
         cv.inRange(hsv, lo1, hi1, mask);
         cv.inRange(hsv, lo2, hi2, m2);
         cv.bitwise_or(mask, m2, mask);
       }
+
+      if (adaptive) cv.bitwise_and(mask, this._chromaMask(rgb, pw, ph, params.localChroma, track), mask);
 
       // --- Region of interest (projected area) and blockers (the ball).
       if (opts.roi) {
