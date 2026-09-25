@@ -9,6 +9,7 @@
 
 import { solveHomography, applyH, invertH, multiplyH } from './homography.js';
 import { drawScene, CALIB_DOTS } from './render.js';
+import { NOTE_COLORS } from './colors.js';
 
 const W = 1280;
 const H = 720;
@@ -22,13 +23,7 @@ const PROJ_QUAD = [
   [215, 575],
 ];
 
-const COLORS = [
-  [250, 228, 70], // yellow
-  [255, 95, 160], // pink
-  [120, 225, 90], // green
-  [255, 150, 60], // orange
-  [80, 190, 245], // blue
-];
+const COLORS = NOTE_COLORS.map((c) => c.rgb);
 
 // Virtual projector size used to keep notes square-ish on a 16:9 projector.
 const VW = 1600;
@@ -141,7 +136,7 @@ export class SimCamera {
   groundTruth() {
     return this.notes
       .filter((n) => n.cx > 0 && n.cx < 1 && n.cy > 0 && n.cy < 1)
-      .map((n) => ({ center: [n.cx, n.cy], corners: noteCorners(n) }));
+      .map((n) => ({ center: [n.cx, n.cy], corners: noteCorners(n), color: NOTE_COLORS.find((c) => c.rgb === n.color)?.name }));
   }
 
   // ---- editing (drag in the feed, buttons in the sim panel)

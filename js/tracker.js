@@ -17,6 +17,8 @@ export const TRACKER_DEFAULTS = {
   deadband: 0.004, // min corner movement before reporting a change
 };
 
+const COLOR_VOTES = 7; // a note's colour is the majority of its last N labels
+
 export function centroid(pts) {
   let x = 0;
   let y = 0;
@@ -62,6 +64,23 @@ function alignCorners(pts, ref) {
   return best;
 }
 
+function vote(t, color) {
+  if (!color) return;
+  t.votes.push(color);
+  if (t.votes.length > COLOR_VOTES) t.votes.shift();
+}
+
+// Most frequent label; ties go to the most recent one.
+function majority(votes) {
+  const counts = {};
+  let best;
+  for (const v of votes) {
+    counts[v] = (counts[v] || 0) + 1;
+    if (!best || counts[v] >= counts[best]) best = v;
+  }
+  return best;
+}
+
 function maxCornerDelta(a, b) {
   let m = 0;
   for (let i = 0; i < a.length; i++) m = Math.max(m, Math.hypot(a[i][0] - b[i][0], a[i][1] - b[i][1]));
@@ -84,17 +103,17 @@ export class NoteTracker {
   }
 
   /**
-   * @param detections [{ corners: [[x,y] x4] }] in projector-normalized coords
+   * @param detections [{ corners: [[x,y] x4], color? }] in projector-normalized coords
    * @param isOccluded optional (corners) => bool. Tracks under the ball keep
    *        their shape and don't age: the ball mask cuts into the note there,
    *        so what the camera sees is not the real outline.
-   * @returns { notes: [{id, corners}], changed: bool }
+   * @returns { notes: [{id, corners, color}], changed: bool }
    */
   update(detections, isOccluded = () => false) {
     const { seenN, missM, smooth, matchDist, deadband } = this.opts;
     const dets = detections.map((d) => {
       const corners = canonicalCorners(d.corners);
-      return { corners, center: centroid(corners) };
+      return { corners, center: centroid(corners), color: d.color };
     });
     const before = this._signature();
 
@@ -116,6 +135,7 @@ export class NoteTracker {
       const t = this.tracks[ti];
       t.seen++;
       t.missed = 0;
+      vote(t, dets[di].color);
       if (!t.confirmed && t.seen >= seenN) t.confirmed = true;
       if (t.confirmed && isOccluded(t.corners)) {
         // keep the last good shape while the ball mask cuts into the note
@@ -151,7 +171,9 @@ export class NoteTracker {
         missed: 0,
         confirmed: seenN <= 1,
         emitted: null,
+        votes: [],
       };
+      vote(t, d.color);
       if (t.confirmed) t.emitted = t.corners.map((p) => [...p]);
       this.tracks.push(t);
     });
@@ -160,7 +182,7 @@ export class NoteTracker {
   }
 
   notes() {
-    return this.tracks.filter((t) => t.confirmed).map((t) => ({ id: t.id, corners: t.emitted }));
+    return this.tracks.filter((t) => t.confirmed).map((t) => ({ id: t.id, corners: t.emitted, color: majority(t.votes) }));
   }
 
   tentative() {

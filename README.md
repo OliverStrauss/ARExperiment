@@ -106,6 +106,24 @@ between the two modes:
 
 Projector-only keys: `F` fullscreen · `B` add ball · `G` gravity · `O` outlines.
 
+## Musical notes
+
+Each sticky-note colour plays its own pitch when a ball hits it (C major
+pentatonic, so any mix sounds fine):
+
+| purple | blue | green | yellow | orange | red |
+|---|---|---|---|---|---|
+| C4 | D4 | E4 | G4 | A4 | C5 |
+
+Harder hits are louder. Sound plays from the **control window** (browsers only
+allow audio after a click on the page, so click anywhere there once; the
+status line shows `Sound: on`).
+
+**Teach the colours** (recommended with a real camera, since the projector and
+webcam shift colours): in *Note colours*, click a colour button, then click
+that note in the camera view (inside its yellow outline). Repeat for all six.
+The feed labels each note with its colour. *Defaults* forgets taught colours.
+
 ## Settings (saved in localStorage)
 
 | Group | Setting | Notes |
@@ -166,6 +184,8 @@ js/calibration.js  calibration + click-snapping
 js/homography.js   pure-JS 3x3 homography maths
 js/tracker.js      note tracking / anti-flicker
 js/physics.js      matter.js world
+js/colors.js       note colours, pitches, colour classification
+js/sound.js        Web Audio tones
 js/render.js       projector drawing (shared with the simulator)
 js/channel.js      BroadcastChannel + message protocol
 js/settings.js     settings schema + localStorage

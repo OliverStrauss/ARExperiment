@@ -1,9 +1,10 @@
 // Persistent settings (localStorage). Both windows share the same origin, so
 // they also share this storage.
 
-// v2: new defaults for far-away walls / smaller ball (old v1 values are ignored)
-const KEY = 'sticky-wall.settings.v2';
+// v3: adds localChroma (lighting-tolerant detection); v2 was far-away walls / smaller ball
+const KEY = 'sticky-wall.settings.v3';
 const CALIB_KEY = 'sticky-wall.calibration.v1';
+const PALETTE_KEY = 'sticky-wall.palette.v1';
 
 // Slider schema: drives both the defaults and the generated UI in control.html.
 // Areas are a percentage of the camera frame so they survive resolution changes.
@@ -14,6 +15,7 @@ export const SLIDERS = [
   { key: 'sMax', group: 'HSV threshold', label: 'Sat max', min: 0, max: 255, step: 1, def: 255 },
   { key: 'vMin', group: 'HSV threshold', label: 'Val min', min: 0, max: 255, step: 1, def: 70 },
   { key: 'vMax', group: 'HSV threshold', label: 'Val max', min: 0, max: 255, step: 1, def: 255 },
+  { key: 'localChroma', group: 'HSV threshold', label: 'Local chroma (0 = off, ignores Sat/Val min)', min: 0, max: 60, step: 1, def: 14 },
   { key: 'morph', group: 'Mask cleanup', label: 'Morph kernel px', min: 1, max: 21, step: 2, def: 5 },
   { key: 'procWidth', group: 'Mask cleanup', label: 'Process width px', min: 320, max: 1280, step: 160, def: 960 },
   { key: 'minArea', group: 'Note filter', label: 'Min area % of frame', min: 0.005, max: 2, step: 0.005, def: 0.02 },
@@ -26,6 +28,7 @@ export const SLIDERS = [
   { key: 'matchDist', group: 'Tracking (anti-flicker)', label: 'Match distance', min: 0.01, max: 0.2, step: 0.01, def: 0.06 },
   { key: 'ballRadius', group: 'Ball', label: 'Ball size', min: 0.003, max: 0.05, step: 0.001, def: 0.012 },
   { key: 'ballSpeed', group: 'Ball', label: 'Ball speed (bounce)', min: 0.05, max: 1.5, step: 0.05, def: 0.45 },
+  { key: 'noteShiftX', group: 'Note alignment', label: 'Shift outlines left/right', min: -0.1, max: 0.1, step: 0.001, def: 0 },
   { key: 'ballPad', group: 'Ball mask', label: 'Radius multiplier', min: 1, max: 4, step: 0.1, def: 1.8 },
   { key: 'ballLag', group: 'Ball mask', label: 'Camera lag s', min: 0, max: 0.6, step: 0.05, def: 0.25 },
 ];
@@ -67,6 +70,25 @@ export function saveCalibration(calib) {
   try {
     if (calib) localStorage.setItem(CALIB_KEY, JSON.stringify(calib));
     else localStorage.removeItem(CALIB_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+// Taught note colours { name: [r,g,b] }, kept apart from the sliders so
+// "Defaults" doesn't forget them.
+export function loadPalette(defaults) {
+  try {
+    return { ...defaults, ...JSON.parse(localStorage.getItem(PALETTE_KEY) || '{}') };
+  } catch {
+    return { ...defaults };
+  }
+}
+
+export function savePalette(palette) {
+  try {
+    if (palette) localStorage.setItem(PALETTE_KEY, JSON.stringify(palette));
+    else localStorage.removeItem(PALETTE_KEY);
   } catch {
     /* ignore */
   }

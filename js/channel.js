@@ -5,7 +5,7 @@
 // relative to the projector window's width/height.
 //
 // control -> projector
-//   notes   { notes: [{ id, corners: [[x,y] x4] }] }
+//   notes   { notes: [{ id, corners: [[x,y] x4], color }] }   color: see colors.js
 //   calib   { on: bool }                 show border + numbered corner dots
 //   cross   { pt: [x,y] | null }         calibration test crosshair
 //   cmd     { cmd: 'start'|'pause'|'toggleRun'|'resetBall'|'addBall'|'clearBalls'
@@ -19,6 +19,7 @@
 //   hello   { w, h }                     projector window size in CSS px
 //   balls   { balls: [{x,y,rx,ry,vx,vy,held}], t, running, gravity, outlines, mode }
 //           ~10 Hz; rx/ry = radius / width|height, vx/vy per second
+//   hit     { id, color, strength }      a ball hit a note (strength 0..1)
 
 export const CHANNEL_NAME = 'sticky-wall';
 

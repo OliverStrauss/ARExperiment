@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { NoteTracker, canonicalCorners, centroid } from '../js/tracker.js';
 import { solveHomography, applyH, invertH, isConvexQuad } from '../js/homography.js';
 import { snapToDot } from '../js/calibration.js';
+import { NOTE_COLORS, classifyColor } from '../js/colors.js';
 
 const require = createRequire(import.meta.url);
 let failed = 0;
@@ -107,6 +108,42 @@ test('tracker: an occluded note keeps its shape and does not age', () => {
   // fully hidden for many rounds: still there
   for (let i = 0; i < 10; i++) t.update([], occluded);
   assert.equal(t.notes().length, 1);
+});
+
+test('tracker: note colour is the majority of recent labels', () => {
+  const t = new NoteTracker({ seenN: 1 });
+  const det = (color) => [{ corners: square(0.5, 0.5), color }];
+  assert.equal(t.update(det('red')).notes[0].color, 'red');
+  t.update(det('red'));
+  const r = t.update(det('orange')); // one misread doesn't flip it
+  assert.equal(r.notes[0].color, 'red');
+  assert.equal(r.changed, false);
+  for (let i = 0; i < 4; i++) t.update(det('orange'));
+  assert.equal(t.notes()[0].color, 'orange', 'a real change wins eventually');
+});
+
+// ------------------------------------------------------------------ colours
+
+test('colours: each reference colour classifies as itself', () => {
+  for (const c of NOTE_COLORS) assert.equal(classifyColor(c.rgb), c.name);
+});
+
+test('colours: darker / washed-out notes keep their colour', () => {
+  assert.equal(classifyColor([120, 30, 35]), 'red'); // shadowed red
+  assert.equal(classifyColor([200, 190, 110]), 'yellow'); // pale yellow
+  assert.equal(classifyColor([90, 50, 130]), 'purple');
+  assert.equal(classifyColor([250, 5, 20]), 'red', 'hue wraps around 0/360');
+});
+
+test('colours: a taught palette overrides the defaults', () => {
+  const palette = { red: [200, 40, 120], orange: [255, 150, 60] }; // camera sees red as pinkish
+  assert.equal(classifyColor([210, 50, 130], palette), 'red');
+});
+
+test('pitches: purple lowest ... red highest', () => {
+  const f = NOTE_COLORS.map((c) => c.freq);
+  assert.deepEqual(NOTE_COLORS.map((c) => c.name), ['purple', 'blue', 'green', 'yellow', 'orange', 'red']);
+  assert.ok(f.every((x, i) => i === 0 || x > f[i - 1]));
 });
 
 // ------------------------------------------------------------------ homography
@@ -279,6 +316,26 @@ test('physics: drop mode - ball waits at the top, steers, drops, resets', async 
   assert.equal(pw.ballsNormalized()[0].held, true);
 });
 
+test('physics: zero-g drop - ball stays in its column and hits a tilted note on a steady beat', async () => {
+  const pw = await physicsWorld(1600, 900);
+  const hits = [];
+  let t = 0;
+  pw.onHit = () => hits.push(t);
+  pw.setConfig({ mode: 'drop', dropGravity: false });
+  assert.equal(pw.engine.gravity.y, 0);
+  pw.setNotes([{ id: 1, corners: [[0.4, 0.58], [0.6, 0.62], [0.6, 0.64], [0.4, 0.60]] }]); // tilted shelf
+  pw.drop(); // held ball at x = 0.5
+  for (let i = 0; i < 60 * 12; i++, t += 1000 / 60) pw.step(1000 / 60);
+  const [b] = pw.ballsNormalized();
+  close(b.x, 0.5, 1e-6, 'still in its column');
+  assert.ok(hits.length >= 4, `hits: ${hits.length}`);
+  const gaps = hits.slice(1).map((h, i) => h - hits[i]);
+  const spread = Math.max(...gaps) - Math.min(...gaps);
+  assert.ok(spread <= 1000 / 60 + 1, `steady beat (gaps ${gaps.map(Math.round)} ms)`);
+  pw.setConfig({ dropGravity: true });
+  assert.equal(pw.engine.gravity.y, 1);
+});
+
 test('physics: dropped ball lands on a note instead of falling through', async () => {
   const pw = await physicsWorld(1600, 900);
   pw.setConfig({ mode: 'drop' });
@@ -292,6 +349,23 @@ test('physics: dropped ball lands on a note instead of falling through', async (
   const [b] = pw.ballsNormalized();
   assert.ok(b.y < 0.6, `ball rests on the shelf (y=${b.y.toFixed(3)})`);
   assert.ok(minVy < 0, 'ball bounced up at least once');
+});
+
+test('physics: a ball hitting a note reports that note\'s colour', async () => {
+  const pw = await physicsWorld(1600, 900);
+  const hits = [];
+  pw.onHit = (h) => hits.push(h);
+  pw.setConfig({ mode: 'drop' });
+  pw.setNotes([{ id: 7, color: 'green', corners: [[0.4, 0.6], [0.6, 0.6], [0.6, 0.62], [0.4, 0.62]] }]);
+  pw.drop();
+  for (let i = 0; i < 240; i++) pw.step(1000 / 60);
+  assert.ok(hits.length >= 1, 'at least one hit');
+  assert.equal(hits[0].id, 7);
+  assert.equal(hits[0].color, 'green');
+  assert.ok(hits[0].strength > 0.1 && hits[0].strength <= 1, `strength ${hits[0].strength}`);
+  assert.ok(hits.length < 15, `settling ball doesn't spam hits (${hits.length})`);
+  pw.setNotes([{ id: 7, color: 'red', corners: [[0.4, 0.6], [0.6, 0.6], [0.6, 0.62], [0.4, 0.62]] }]);
+  assert.equal(pw.notes.get(7).color, 'red', 'colour updates without a shape change');
 });
 
 // ------------------------------------------------------------------ runner

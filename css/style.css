@@ -160,3 +160,4 @@ body.projector canvas {
 /* ---------- index.html ---------- */
 .landing { max-width: 640px; margin: 60px auto; padding: 0 16px; }
 .landing li { margin: 8px 0; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }

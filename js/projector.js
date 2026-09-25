@@ -10,7 +10,7 @@ const hudStatus = document.getElementById('hudStatus');
 // Runtime toggles owned by the projector (so its keyboard shortcuts work too);
 // reported to the control window in every heartbeat.
 const PREFS_KEY = 'sticky-wall.projector.v1';
-const PREF_DEFAULTS = { running: true, gravity: false, outlines: false, mode: 'drop' };
+const PREF_DEFAULTS = { running: true, gravity: false, dropGravity: true, outlines: false, mode: 'drop' };
 function loadPrefs() {
   try {
     return { ...PREF_DEFAULTS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') };
@@ -38,10 +38,14 @@ const state = {
 };
 
 const physics = new PhysicsWorld(state.w, state.h);
-physics.setConfig({ gravity: prefs.gravity, mode: prefs.mode });
+physics.setConfig({ gravity: prefs.gravity, dropGravity: prefs.dropGravity, mode: prefs.mode });
 physics.resetBalls();
 
 const channel = createChannel('projector', onMessage);
+
+// Sound plays in the control window: it gets the clicks/keys browsers require
+// before audio may start, and the projector window usually never does.
+physics.onHit = (hit) => channel.send('hit', hit);
 
 function onMessage(msg) {
   state.lastControl = Date.now();
@@ -85,9 +89,11 @@ function runCommand(cmd) {
     case 'resetBall': physics.resetBalls(); break;
     case 'addBall': physics.addBall(); break;
     case 'clearBalls': physics.clearBalls(); break;
+    // Gravity toggles the current mode's setting (drop and bounce each keep one).
     case 'toggleGravity':
-      prefs.gravity = !prefs.gravity;
-      physics.setConfig({ gravity: prefs.gravity });
+      if (prefs.mode === 'drop') prefs.dropGravity = !prefs.dropGravity;
+      else prefs.gravity = !prefs.gravity;
+      physics.setConfig({ gravity: prefs.gravity, dropGravity: prefs.dropGravity });
       break;
     case 'toggleOutlines': prefs.outlines = !prefs.outlines; break;
     // Space: drop the waiting ball (or bring a new one up) in drop mode,
@@ -120,7 +126,7 @@ function sendBalls() {
     balls: state.calib ? [] : physics.ballsNormalized(),
     t: Date.now(),
     running: prefs.running,
-    gravity: prefs.gravity,
+    gravity: prefs.mode === 'drop' ? prefs.dropGravity : prefs.gravity,
     outlines: prefs.outlines,
     mode: prefs.mode,
   });

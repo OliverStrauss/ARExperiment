@@ -2,13 +2,16 @@
 // balls. Two modes:
 //   drop   - a ball waits at the top, is steered left/right, then dropped and
 //            falls under gravity, bouncing off notes until it settles.
+//            With dropGravity off, the dropped ball is a metronome: it stays in
+//            its column and bounces straight up and down at a constant speed
+//            (note below <-> top wall), so it hits the note on a steady beat.
 //   bounce - balls fly around at a constant speed with no gravity.
 // Works in projector CSS pixels internally; notes come in and
 // balls go out in projector-normalized coordinates.
 //
 // matter.js velocities are "pixels per 1000/60 ms"; multiply by 60 for px/s.
 
-const { Engine, Bodies, Body, Composite, Vertices, Collision } = window.Matter;
+const { Engine, Events, Bodies, Body, Composite, Vertices, Collision } = window.Matter;
 
 const WALL = 1000; // wall thickness in px: thick enough that nothing tunnels
 const SUBSTEP_MS = 1000 / 120;
@@ -33,6 +36,8 @@ const DROP_OPTS = {
 };
 const STEER_SPEED = 0.5; // screen widths per second while an arrow key is held
 const STATIC_OPTS = { isStatic: true, restitution: 1, friction: 0, frictionStatic: 0 };
+const HIT_MIN = 0.04; // impacts slower than this fraction of ball speed are silent (rolling, settling)
+const HIT_COOLDOWN_MS = 120; // same ball + same note can't retrigger faster than this
 
 export class PhysicsWorld {
   constructor(w, h) {
@@ -45,9 +50,11 @@ export class PhysicsWorld {
     this.walls = [];
     this.balls = [];
     this.notes = new Map(); // id -> { key, corners (normalized), body }
-    this.config = { mode: 'bounce', gravity: false, ballRadius: 0.012, ballSpeed: 0.45 };
+    this.config = { mode: 'bounce', gravity: false, dropGravity: true, ballRadius: 0.012, ballSpeed: 0.45 };
     this.steerDir = 0; // -1 left, 0, +1 right (drop mode)
+    this.onHit = null; // ({ id, color, strength 0..1 }) => void, when a ball hits a note
     this._buildWalls();
+    Events.on(this.engine, 'collisionStart', (e) => this._onCollisions(e.pairs));
   }
 
   // ---------------------------------------------------------------- geometry
@@ -98,7 +105,7 @@ export class PhysicsWorld {
 
   // ---------------------------------------------------------------- notes
 
-  /** @param notes [{ id, corners: [[x,y] x4] }] projector-normalized */
+  /** @param notes [{ id, corners: [[x,y] x4], color? }] projector-normalized */
   setNotes(notes) {
     const seen = new Set();
     const touched = [];
@@ -106,14 +113,18 @@ export class PhysicsWorld {
       seen.add(n.id);
       const key = JSON.stringify(n.corners);
       const old = this.notes.get(n.id);
-      if (old && old.key === key) continue;
+      if (old && old.key === key) {
+        old.color = n.color;
+        continue;
+      }
       if (old?.body) Composite.remove(this.world, old.body);
       const body = this._noteBody(n.corners);
       if (body) {
+        body.plugin.noteId = n.id;
         Composite.add(this.world, body);
         touched.push(body);
       }
-      this.notes.set(n.id, { key, corners: n.corners, body });
+      this.notes.set(n.id, { key, corners: n.corners, body, color: n.color });
     }
     for (const [id, n] of this.notes) {
       if (seen.has(id)) continue;
@@ -129,6 +140,29 @@ export class PhysicsWorld {
     if (Math.abs(Vertices.area(verts, true)) < 16) return null;
     const c = Vertices.centre(verts);
     return Bodies.fromVertices(c.x, c.y, [verts], STATIC_OPTS);
+  }
+
+  // collisionStart fires before the solver, so the ball's velocity is still
+  // the incoming one: its component along the contact normal is the impact.
+  _onCollisions(pairs) {
+    if (!this.onHit) return;
+    const now = this.engine.timing.timestamp;
+    for (const pair of pairs) {
+      const a = pair.bodyA.parent;
+      const b = pair.bodyB.parent;
+      const ball = a.label === 'ball' ? a : b.label === 'ball' ? b : null;
+      const other = ball === a ? b : a;
+      const id = other.plugin?.noteId;
+      if (!ball || ball.plugin.held || id === undefined) continue;
+      const v = Body.getVelocity(ball);
+      const n = pair.collision.normal;
+      const strength = Math.min(1, Math.abs(v.x * n.x + v.y * n.y) / this.speedUnits());
+      if (strength < HIT_MIN) continue;
+      const last = ball.plugin.lastHit;
+      if (last && last.id === id && now - last.t < HIT_COOLDOWN_MS) continue;
+      ball.plugin.lastHit = { id, t: now };
+      this.onHit({ id, color: this.notes.get(id)?.color, strength });
+    }
   }
 
   // Push a ball out of any overlapping bodies; respawn it if it is deep inside.
@@ -229,7 +263,8 @@ export class PhysicsWorld {
     for (const b of held) {
       b.plugin.held = false;
       b.isSensor = false;
-      Body.setVelocity(b, { x: 0, y: 0 });
+      b.plugin.lockX = b.position.x;
+      Body.setVelocity(b, { x: 0, y: this.hasGravity() ? 0 : this.speedUnits() });
       const notes = [...this.notes.values()].map((n) => n.body).filter(Boolean);
       this._evict(b, notes);
     }
@@ -272,12 +307,16 @@ export class PhysicsWorld {
     }
   }
 
+  // Drop mode has its own gravity toggle (on by default); bounce uses `gravity`.
+  hasGravity() {
+    return this.config.mode === 'drop' ? this.config.dropGravity : this.config.gravity;
+  }
+
   setConfig(cfg) {
     const radiusChanged = cfg.ballRadius !== undefined && cfg.ballRadius !== this.config.ballRadius;
     const modeChanged = cfg.mode !== undefined && cfg.mode !== this.config.mode;
     Object.assign(this.config, cfg);
-    // Drop mode always has gravity; in bounce mode it's the Gravity toggle.
-    this.engine.gravity.y = this.config.mode === 'drop' || this.config.gravity ? 1 : 0;
+    this.engine.gravity.y = this.hasGravity() ? 1 : 0;
     if (modeChanged) this.resetBalls();
     else if (radiusChanged) this._replaceBalls(this._ballStates());
   }
@@ -304,7 +343,16 @@ export class PhysicsWorld {
       if (b.plugin.held) continue;
       let v = Body.getVelocity(b);
       let mag = Math.hypot(v.x, v.y);
-      if (this.config.gravity || this.config.mode === 'drop') {
+      // Zero-g drop: lock the ball to its column so tilted notes can't
+      // deflect it; only the vertical direction survives a collision.
+      if (this.config.mode === 'drop' && !this.config.dropGravity) {
+        b.plugin.lockX ??= b.position.x; // balls rebuilt on resize/toggle have none
+        if (Math.abs(b.position.x - b.plugin.lockX) > 1e-6) Body.setPosition(b, { x: b.plugin.lockX, y: b.position.y });
+        Body.setVelocity(b, { x: 0, y: (v.y < 0 ? -1 : 1) * target });
+        continue;
+      }
+      b.plugin.lockX = undefined; // re-lock at the current x if zero-g comes back
+      if (this.hasGravity()) {
         const cap = target * 2.5;
         if (mag > cap) Body.setVelocity(b, { x: (v.x / mag) * cap, y: (v.y / mag) * cap });
         continue;
