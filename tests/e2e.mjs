@@ -135,42 +135,10 @@ try {
   check(det.found === det.gt, `found ${det.found}/${det.gt} notes (note outside projection ignored)`);
   check(det.worst < 0.01, `note centre error ${(det.worst * 100).toFixed(2)}% (< 1%)`);
   check(det.wrongColor.length === 0, `note colours recognised (${det.wrongColor.join(', ') || 'all correct'})`);
-  const projNotes = await proj.evaluate(() => window.stickyWall.physics.notes.size);
-  check(projNotes === det.gt, `projector built ${projNotes} static note bodies`);
-
-  console.log('physics + ball mask');
-  // Bounce mode for this part: balls fly everywhere, which stresses the mask.
-  await ctl.click('#modeBtn');
-  await sleep(400);
-  check((await ctl.textContent('#modeBtn')) === 'Mode: Bounce', 'mode button switches to bounce');
-  // Stress the ball mask: big balls whose projected light looks saturated.
-  await ctl.check('#simTint');
-  await ctl.evaluate(() => {
-    window.stickyWall.state.settings.ballRadius = 0.06;
-    window.stickyWall.channel.send('config', { ballRadius: 0.06 });
-  });
-  await ctl.click('#addBall');
-  await ctl.click('#addBall');
-  await sleep(1500);
-  const counts = new Set();
-  const start = await proj.evaluate(() => window.stickyWall.physics.ballsNormalized());
-  let travelled = 0;
-  let prev = start;
-  for (let i = 0; i < 30; i++) {
-    await sleep(400);
-    counts.add(await ctl.evaluate(() => window.stickyWall.state.proj.notes.length));
-    const now = await proj.evaluate(() => window.stickyWall.physics.ballsNormalized());
-    travelled += Math.hypot(now[0].x - prev[0].x, now[0].y - prev[0].y);
-    prev = now;
-  }
-  check(start.length === 3, `3 balls in play (got ${start.length})`);
-  check(travelled > 1, `ball keeps moving (${travelled.toFixed(2)} screen widths in 12 s)`);
-  check(counts.size === 1 && counts.has(det.gt), `balls never detected as notes (counts seen: ${[...counts]})`);
-  await ctl.screenshot({ path: path.join(OUT, '2-playing-control.png') });
-  await proj.screenshot({ path: path.join(OUT, '2-playing-projector.png') });
+  const projNotes = await proj.evaluate(() => window.stickyWall.state.notes.length);
+  check(projNotes === det.gt, `projector received ${projNotes} notes`);
 
   console.log('live note updates');
-  const ballIds = await proj.evaluate(() => window.stickyWall.physics.balls.map((b) => b.id).join(','));
   // drag the first simulated note to a new place, in the camera feed
   const [from, to] = await ctl.evaluate(() => {
     const sim = window.stickyWall.state.sim;
@@ -190,8 +158,6 @@ try {
     }),
   );
   check(moved, 'dragged note shows up at its new position on the projector');
-  const ballIdsAfter = await proj.evaluate(() => window.stickyWall.physics.balls.map((b) => b.id).join(','));
-  check(ballIds === ballIdsAfter, 'balls were not reset by the note update');
   await ctl.evaluate(() => {
     const sim = window.stickyWall.state.sim;
     sim.notes.splice(1, 1);
@@ -201,44 +167,59 @@ try {
   const afterRemove = await ctl.evaluate(() => window.stickyWall.state.proj.notes.length);
   check(afterRemove === det.gt - 1, `removed note disappears (${afterRemove} left)`);
 
-  console.log('controls');
-  await ctl.click('#runBtn');
-  await sleep(400);
-  const paused = await proj.evaluate(() => !window.stickyWall.prefs.running);
-  check(paused && (await ctl.textContent('#runBtn')) === 'Start', 'Pause stops physics and the button shows Start');
-  await ctl.click('#runBtn');
-  await ctl.click('#gravityBtn');
-  await sleep(400);
-  check(await proj.evaluate(() => window.stickyWall.prefs.gravity), 'gravity toggles on');
-  await ctl.click('#gravityBtn');
-  await ctl.click('#resetBall');
-  await sleep(400);
-  check((await proj.evaluate(() => window.stickyWall.physics.balls.length)) === 1, 'Reset ball leaves one ball');
 
-  console.log('drop mode (keyboard in the control window)');
-  await ctl.click('#modeBtn');
-  await sleep(400);
-  const ball = () => proj.evaluate(() => window.stickyWall.physics.ballsNormalized()[0]);
-  const b0 = await ball();
-  check(b0.held && b0.y < 0.1, 'a ball waits at the top of the screen');
-  await ctl.keyboard.down('ArrowRight');
-  await sleep(500);
-  await ctl.keyboard.up('ArrowRight');
-  const b1 = await ball();
-  check(b1.x > b0.x + 0.1 && b1.held, `→ moves it right (${b0.x.toFixed(2)} → ${b1.x.toFixed(2)})`);
-  await ctl.keyboard.down('ArrowLeft');
+  console.log('beat: lanes, balls, rhythm');
+  // A clean wall: one rail note and a target whose top edge is 4 x unit below
+  // the rail, plus a note far off to the side.
+  const NOTE = 90; // px at 1600x900: 0.1 of the projector height
+  const half = NOTE / 2 / 900;
+  const S = await ctl.evaluate(() => window.stickyWall.state.settings);
+  const targetTop = S.railBottom + 4 * S.unit;
+  await ctl.evaluate(({ half, targetTop, NOTE }) => {
+    window.stickyWall.state.sim.setNotes([
+      { cx: 0.4, cy: 0.075, color: 'blue', size: NOTE },
+      { cx: 0.4, cy: targetTop + half, color: 'green', size: NOTE },
+      { cx: 0.8, cy: 0.5, color: 'red', size: NOTE },
+    ]);
+  }, { half, targetTop, NOTE });
+  await ctl.waitForFunction(() => window.stickyWall.engine.lanes.some((l) => l.targetId != null), null, { timeout: 15000 });
+  const lane = await ctl.evaluate(() => window.stickyWall.engine.lanes[0]);
+  check(lane.n === 4, `lane length is 4 16ths (d = ${lane.d.toFixed(3)})`);
+  check(lane.color === 'green', `target colour is green (${lane.color})`);
+
+  // Start the clock from the projector window (keys are forwarded).
+  await proj.bringToFront();
+  await proj.keyboard.press(' ');
+  await ctl.waitForFunction(() => window.stickyWall.engine.running, null, { timeout: 3000 });
+  check(true, 'Space on the projector starts the clock');
+  const hitsIn = async (secs) => {
+    const t0 = await proj.evaluate(() => performance.timeOrigin + performance.now());
+    await sleep(secs * 1000);
+    return proj.evaluate((t0) => window.stickyWall.state.hitLog.filter((t) => t * 1000 >= t0), t0);
+  };
+  await sleep(700);
+  const one = await hitsIn(5);
+  const gaps = one.slice(1).map((t, i) => (t - one[i]) * 1000);
+  const worst = Math.max(...gaps.map((g) => Math.abs(g - 625)));
+  check(gaps.length >= 6, `${one.length} hits in 5 s`);
+  check(worst <= 8, `hits every 625 ms at 96 BPM (worst error ${worst.toFixed(1)} ms)`);
+  await proj.screenshot({ path: path.join(OUT, '2-beat-projector.png') });
+
+  await proj.keyboard.press('b');
   await sleep(300);
-  await ctl.keyboard.up('ArrowLeft');
-  check((await ball()).x < b1.x, '← moves it left');
-  await ctl.keyboard.press(' ');
-  await sleep(1200);
-  const b2 = await ball();
-  check(!b2.held && b2.y > 0.3, `Space drops it (now at y=${b2.y.toFixed(2)})`);
-  await proj.screenshot({ path: path.join(OUT, '3-drop-projector.png') });
-  await ctl.keyboard.press('r');
-  await sleep(400);
-  const b3 = await ball();
-  check(b3.held && b3.y < 0.1, 'R puts a new ball back at the top');
+  const balls = await ctl.evaluate(() => window.stickyWall.engine.ballsOf(window.stickyWall.engine.lanes[0].id).length);
+  check(balls === 2, `B adds a ball (${balls})`);
+  const two = await hitsIn(5);
+  check(Math.abs(two.length - 2 * one.length) <= 2, `hit count doubles (${one.length} -> ${two.length})`);
+
+  // The balls must never be detected as notes.
+  const counts = new Set();
+  for (let i = 0; i < 10; i++) {
+    await sleep(300);
+    counts.add(await ctl.evaluate(() => window.stickyWall.state.proj.notes.length));
+  }
+  check(counts.size === 1 && counts.has(3), `balls and halos never detected as notes (counts seen: ${[...counts]})`);
+  await ctl.screenshot({ path: path.join(OUT, '2-beat-control.png') });
 
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {

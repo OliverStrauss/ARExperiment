@@ -46,13 +46,14 @@ export function ballProgress(pos, phase, n) {
 
 /**
  * Normalized y of a ball's centre. It turns round just below the rail note
- * (so it never lights the paper) and touches the target's top edge on a hit.
- * @param rN ball radius as a fraction of the projector height
+ * and just above the target's top edge on a hit, so it never lights the paper.
+ * @param rN   ball radius as a fraction of the projector height
+ * @param gapN gap left between the ball and both notes (same units)
  */
-export function ballY(lane, phase, pos, railBottom, rN) {
-  const y0 = Math.max(railBottom, (lane.railNoteBottom ?? railBottom) + rN * 1.5);
+export function ballY(lane, phase, pos, railBottom, rN, gapN = 0) {
+  const y0 = Math.max(railBottom, (lane.railNoteBottom ?? railBottom) + rN + gapN);
   if (lane.n == null || lane.top == null) return y0;
-  const y1 = Math.max(y0, lane.top - rN);
+  const y1 = Math.max(y0, lane.top - rN - gapN);
   return y0 + (y1 - y0) * ballProgress(pos, phase, lane.n);
 }
 

@@ -4,22 +4,30 @@
 // Coordinates on the wire are always "projector-normalized": x, y in [0, 1]
 // relative to the projector window's width/height.
 //
+// Times are seconds on the epoch clock both windows share:
+// (performance.timeOrigin + performance.now()) / 1000 (see beat.js epochNow).
+//
 // control -> projector
 //   notes   { notes: [{ id, corners: [[x,y] x4], color }] }   color: see colors.js
 //   calib   { on: bool }                 show border + numbered corner dots
 //   cross   { pt: [x,y] | null }         calibration test crosshair
-//   cmd     { cmd: 'start'|'pause'|'toggleRun'|'resetBall'|'addBall'|'clearBalls'
-//                  |'toggleGravity'|'toggleOutlines'|'toggleMode'
-//                  |'action' }       action = Space: drop (drop mode) / pause (bounce)
-//   steer   { dir: -1|0|1 }              move the waiting ball (drop mode)
-//   config  { ballRadius, ballSpeed }    radius: fraction of min(w,h); speed: widths/s
 //   ping    {}                           asks the projector to say hello
+//   beat    { clock: { running, bpm, anchor, pos0 }, bpm, snap, railBottom, unit,
+//             lanes: [{ id, x, w, top, d, n, targetId, color, instrument,
+//                       railNoteBottom, shadowed: [ids], balls: [{ id, phase }] }],
+//             highlight, mutes: [colours], solo, overlay, outlines, echoBars }
+//           On every change + 1 s keep-alive. pos (16ths) = clockPos(clock, now);
+//           ball phases are in 16ths (see beat.js). Lane id = rail note id.
+//   echo    { bars, playheadStep, rows: [{ pitch, color, hits: [{ step, v, kept }] }] }  ~4 Hz
+//   ring    { open: true, noteId, choices, index, deadline, timeout } | { open: false }
+//   toast   { key, text }                shown for 1 s
+//   hitFx   { noteId, color, at }        sent when scheduled (~100 ms early);
+//                                        the halo starts at `at`
 //
 // projector -> control
 //   hello   { w, h }                     projector window size in CSS px
-//   balls   { balls: [{x,y,rx,ry,vx,vy,held}], t, running, gravity, outlines, mode }
-//           ~10 Hz; rx/ry = radius / width|height, vx/vy per second
-//   hit     { id, color, strength }      a ball hit a note (strength 0..1)
+//   key     { key, code, shift, repeat } forwarded key presses (see keys.js)
+//   click   { x, y }                     mouse click on the wall, normalized
 
 export const CHANNEL_NAME = 'sticky-wall';
 

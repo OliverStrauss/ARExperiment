@@ -167,6 +167,12 @@ export class SimCamera {
     this.dirty = true;
   }
 
+  /** Replace the wall: [{ cx, cy, color: name, angle?: deg, size?: px at 1600x900 }] */
+  setNotes(list) {
+    this.notes = list.map((n) => makeNote(n.cx, n.cy, n.angle || 0, NOTE_COLORS.findIndex((c) => c.name === n.color), n.size));
+    this.dirty = true;
+  }
+
   shuffle() {
     this.notes.forEach((n) => {
       if (n.cx < 0) return;

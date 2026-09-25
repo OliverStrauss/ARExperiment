@@ -52,6 +52,8 @@ button:disabled { opacity: .5; cursor: default; }
 .topbar h1 { font-size: 16px; margin: 0 10px 0 0; }
 .topbar .spacer { flex: 1; }
 .topbar label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.bpm-group { display: inline-flex; align-items: center; gap: 4px; }
+.bpm { font: 13px ui-monospace, Menlo, monospace; min-width: 62px; text-align: center; }
 
 .layout {
   display: grid;

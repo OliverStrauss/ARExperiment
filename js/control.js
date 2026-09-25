@@ -6,8 +6,12 @@ import { listCameras, openCamera, stopStream, SIM_DEVICE_ID } from './camera.js'
 import { SimCamera } from './simcam.js';
 import { cvReady } from './cvload.js';
 import { Detector } from './vision.js';
-import { NOTE_COLORS, DEFAULT_PALETTE, classifyColor, freqOf } from './colors.js';
+import { NOTE_COLORS, DEFAULT_PALETTE, classifyColor, freqOf, pitchOf } from './colors.js';
 import { unlock, soundReady, playTone } from './sound.js';
+import { buildLanes, rateLabel } from './lanes.js';
+import { BeatEngine, epochNow, clockPos, ballY } from './beat.js';
+import { ballRadiusN, ballGapN, refScale, inflate, HALO_MS, HALO_MASK, BALL_R, BALL_GAP } from './render.js';
+import { keyAction } from './keys.js';
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -30,9 +34,9 @@ const els = {
   roiOnly: $('roiOnly'),
   freezeNotes: $('freezeNotes'),
   runBtn: $('runBtn'),
-  gravityBtn: $('gravityBtn'),
-  outlinesBtn: $('outlinesBtn'),
-  modeBtn: $('modeBtn'),
+  bpmOut: $('bpmOut'),
+  snapBtn: $('snapBtn'),
+  outlines: $('outlines'),
   colorButtons: $('colorButtons'),
   colorMsg: $('colorMsg'),
 };
@@ -56,6 +60,12 @@ const state = {
   blockers: [], // ball mask capsules used in the last detection (camera px)
   palette: loadPalette(DEFAULT_PALETTE), // { colour name: [r,g,b] as the camera sees it }
   teaching: null, // colour name waiting for a click on a note in the feed
+  // Beat UI state owned by this window (the projector only draws it).
+  highlight: null, // highlighted lane id
+  offsets: {}, // { railNoteId: dx } lane nudges (A / D)
+  overlay: false, // ? key overlay on the wall
+  halos: [], // [{ noteId, color, at }] hits in flight (drawn + masked out of detection)
+  hitLog: [], // recent hits (tests / debugging)
   // Mirror of what the projector is showing (drives the simulated camera).
   proj: {
     w: 1920,
@@ -63,17 +73,24 @@ const state = {
     calib: false,
     cross: null,
     notes: [],
-    outlines: false,
-    balls: [], // [{x,y,rx,ry,vx,vy,t}] from the projector heartbeat
-    running: true,
-    gravity: false,
-    mode: 'drop',
+    beat: null,
+    echo: null,
+    ring: null,
+    toast: null,
   },
 };
 
+const engine = new BeatEngine({
+  bpm: state.settings.bpm,
+  snap: state.settings.snap,
+  echoBars: state.settings.echoBars,
+  maxBallsPerLane: state.settings.maxBallsPerLane,
+});
+
 function projectorScene() {
   const p = state.proj;
-  return { ...p, aspect: p.w / p.h };
+  const now = epochNow();
+  return { ...p, outlines: state.settings.outlines, halos: state.halos, now, aspect: p.w / p.h };
 }
 
 // ---------------------------------------------------------------- projector link
@@ -81,92 +98,222 @@ function projectorScene() {
 const channel = createChannel('control', onMessage);
 
 function onMessage(msg) {
-  if (msg.type === 'hit') {
-    const f = freqOf(msg.color);
-    if (f) playTone(f, msg.strength);
+  if (msg.type === 'key') {
+    handleKey(msg);
     return;
   }
-  if (msg.type !== 'hello' && msg.type !== 'balls') return;
+  if (msg.type !== 'hello') return;
   // A projector that (re)appears gets the full current state pushed to it.
   const reconnect = Date.now() - state.projSeen > 3000;
   state.projSeen = Date.now();
   if (reconnect) setTimeout(syncProjector, 0);
-  if (msg.type === 'hello') {
-    state.proj.w = msg.w;
-    state.proj.h = msg.h;
-  } else {
-    state.proj.balls = msg.balls.map((b) => ({ ...b, t: msg.t }));
-    state.proj.running = msg.running;
-    state.proj.gravity = msg.gravity;
-    state.proj.outlines = msg.outlines;
-    state.proj.mode = msg.mode;
-    updateGameButtons();
+  state.proj.w = msg.w;
+  state.proj.h = msg.h;
+}
+
+// ---------------------------------------------------------------- beat engine
+// This window owns the beat: lanes come from the tracked notes, the engine
+// schedules hits on the audio clock, and the projector draws from 'beat'.
+
+function laneOptions() {
+  const s = state.settings;
+  return { railBottom: s.railBottom, unit: s.unit, snap: engine.snap, offsets: state.offsets };
+}
+
+function rebuildLanes() {
+  const lanes = buildLanes(state.proj.notes, laneOptions());
+  engine.setLanes(lanes);
+  engine.pruneInstruments(state.proj.notes.map((n) => n.id));
+  const ids = lanes.map((l) => l.id);
+  for (const id of Object.keys(state.offsets)) if (!ids.includes(Number(id))) delete state.offsets[id];
+  if (!ids.includes(state.highlight)) state.highlight = ids[0] ?? null;
+  sendBeat();
+}
+
+function beatPayload() {
+  const s = state.settings;
+  return {
+    clock: engine.clock(),
+    bpm: engine.bpm,
+    snap: engine.snap,
+    railBottom: s.railBottom,
+    unit: s.unit,
+    lanes: engine.lanes.map((l) => ({
+      id: l.id,
+      x: l.x,
+      w: l.w,
+      top: l.top,
+      d: l.d,
+      n: l.n,
+      targetId: l.targetId,
+      color: l.color,
+      railNoteBottom: l.railNoteBottom,
+      shadowed: l.shadowed,
+      instrument: l.targetId == null ? null : engine.instrumentOf(l.targetId),
+      balls: engine.ballsOf(l.id).map((b) => ({ id: b.id, phase: b.phase })),
+    })),
+    highlight: state.highlight,
+    mutes: [...engine.mutes],
+    solo: engine.solo,
+    overlay: state.overlay,
+    outlines: s.outlines,
+    echoBars: engine.o.echoBars,
+  };
+}
+
+function sendBeat() {
+  state.proj.beat = beatPayload();
+  channel.send('beat', state.proj.beat);
+  renderBeatUI();
+}
+setInterval(sendBeat, 1000); // keep-alive
+
+function schedulerTick() {
+  const hits = engine.tick(epochNow());
+  for (const h of hits) {
+    const f = freqOf(h.color) ?? freqOf('purple');
+    playTone(f, h.velocity, h.time);
+    channel.send('hitFx', { noteId: h.noteId, color: h.color, at: h.time });
+    state.halos.push({ noteId: h.noteId, color: h.color, at: h.time });
+    state.hitLog.push(h);
+  }
+  if (state.hitLog.length > 500) state.hitLog.splice(0, state.hitLog.length - 500);
+  const old = epochNow() - HALO_MS / 1000 - state.settings.ballLag - 0.1;
+  if (state.halos.length && state.halos[0].at < old) state.halos = state.halos.filter((h) => h.at >= old);
+}
+setInterval(schedulerTick, 25);
+
+function toast(key, text) {
+  state.proj.toast = { key, text, at: epochNow() };
+  channel.send('toast', { key, text });
+}
+
+function laneIndex(id) {
+  return engine.lanes.findIndex((l) => l.id === id);
+}
+
+function laneName(id) {
+  return `Lane ${laneIndex(id) + 1}`;
+}
+
+function setSetting(key, value) {
+  state.settings[key] = value;
+  saveSettings(state.settings);
+  const input = els.sliders.querySelector(`input[data-key="${key}"]`);
+  if (input) {
+    input.value = value;
+    input.nextElementSibling.textContent = input.value;
   }
 }
 
-function sendBallConfig() {
-  channel.send('config', { ballRadius: state.settings.ballRadius, ballSpeed: state.settings.ballSpeed });
+// Every action from the keyboard (either window) or the buttons.
+function runAction(a) {
+  const now = epochNow();
+  const lane = engine.lane(state.highlight);
+  const colorName = (c) => `${c} (${pitchOf(c)})`;
+  switch (a.action) {
+    case 'toggleRun':
+      toast(a.cap, engine.toggle(now) ? 'Clock running' : 'Clock stopped');
+      break;
+    case 'tempo':
+      setSetting('bpm', engine.setBpm(engine.bpm + a.arg, now));
+      toast(a.cap, `Tempo ${engine.bpm} BPM`);
+      break;
+    case 'snap':
+      engine.snap = !engine.snap;
+      setSetting('snap', engine.snap);
+      rebuildLanes();
+      toast(a.cap, `Snap ${engine.snap ? 'on' : 'off'}`);
+      break;
+    case 'lane': {
+      const n = engine.lanes.length;
+      if (!n) return toast(a.cap, 'No lanes: put a note in the rail');
+      const i = laneIndex(state.highlight);
+      state.highlight = engine.lanes[(((i < 0 ? 0 : i + a.arg) % n) + n) % n].id;
+      const l = engine.lane(state.highlight);
+      toast(a.cap, `${laneName(l.id)} · ${l.n == null ? 'no target' : `${pitchOf(l.color) ?? '?'} · ${rateLabel(l.n, engine.snap)}`}`);
+      break;
+    }
+    case 'addBall':
+    case 'removeBall': {
+      if (!lane) return toast(a.cap, 'No lane highlighted');
+      const ok = a.action === 'addBall' ? engine.addBall(lane.id, now) : engine.removeBall(lane.id);
+      const count = engine.ballsOf(lane.id).length;
+      toast(a.cap, ok ? `${laneName(lane.id)} → ${count} ball${count > 1 ? 's' : ''}` : `${laneName(lane.id)} has ${count} (${a.action === 'addBall' ? 'max' : 'min'})`);
+      break;
+    }
+    case 'nudge':
+      if (!lane) return toast(a.cap, 'No lane highlighted');
+      state.offsets[lane.id] = (state.offsets[lane.id] || 0) + a.arg * 0.005;
+      rebuildLanes();
+      toast(a.cap, `${laneName(lane.id)} nudged ${a.arg < 0 ? '←' : '→'}`);
+      break;
+    case 'mute':
+      toast(a.cap, `${engine.toggleMute(a.arg) ? 'Mute' : 'Unmute'} ${colorName(a.arg)}`);
+      break;
+    case 'solo':
+      toast(a.cap, engine.toggleSolo(a.arg) ? `Solo ${colorName(a.arg)}` : 'Solo off');
+      break;
+    case 'reset':
+      engine.resetBalls();
+      toast(a.cap, 'Balls reset: 1 per lane');
+      break;
+    case 'help':
+      state.overlay = !state.overlay;
+      toast(a.cap, state.overlay ? 'Keys' : 'Keys hidden');
+      break;
+    default:
+      return;
+  }
+  sendBeat();
 }
 
-function updateGameButtons() {
-  els.runBtn.textContent = state.proj.running ? 'Pause' : 'Start';
-  els.gravityBtn.classList.toggle('active', state.proj.gravity);
-  els.outlinesBtn.classList.toggle('active', state.proj.outlines);
-  els.modeBtn.textContent = `Mode: ${state.proj.mode === 'bounce' ? 'Bounce' : 'Drop'}`;
+function handleKey(k) {
+  const a = keyAction(k);
+  if (!a || a.action === 'fullscreen') return;
+  if (k.repeat && a.action !== 'tempo' && a.action !== 'spin') return;
+  runAction(a);
 }
 
-const cmd = (name) => () => channel.send('cmd', { cmd: name });
-els.runBtn.addEventListener('click', cmd('toggleRun'));
-$('resetBall').addEventListener('click', cmd('resetBall'));
-$('addBall').addEventListener('click', cmd('addBall'));
-els.gravityBtn.addEventListener('click', cmd('toggleGravity'));
-els.outlinesBtn.addEventListener('click', cmd('toggleOutlines'));
-els.modeBtn.addEventListener('click', cmd('toggleMode'));
-
-// Game keys work from this window too (so you don't need to focus the
-// projector): arrows steer the waiting ball, Space drops it, R resets.
-const arrows = { left: false, right: false };
-function sendSteer() {
-  channel.send('steer', { dir: (arrows.right ? 1 : 0) - (arrows.left ? 1 : 0) });
-}
 function isTyping(el) {
   return el?.tagName === 'SELECT' || el?.tagName === 'TEXTAREA' || (el?.tagName === 'INPUT' && el.type === 'text');
 }
 window.addEventListener('keydown', (e) => {
-  if (isTyping(e.target) || e.metaKey || e.ctrlKey) return;
-  const k = e.key.toLowerCase();
-  if (k === 'arrowleft') arrows.left = true;
-  else if (k === 'arrowright') arrows.right = true;
-  else if (k === ' ') { if (!e.repeat) channel.send('cmd', { cmd: 'action' }); }
-  else if (k === 'r') { if (!e.repeat) channel.send('cmd', { cmd: 'resetBall' }); }
-  else if (k === 'm') { if (!e.repeat) channel.send('cmd', { cmd: 'toggleMode' }); }
-  else return;
-  if (k.startsWith('arrow')) sendSteer();
-  e.preventDefault(); // no page scrolling / slider nudging / button presses
-});
-window.addEventListener('keyup', (e) => {
-  const k = e.key.toLowerCase();
-  if (k === 'arrowleft') arrows.left = false;
-  else if (k === 'arrowright') arrows.right = false;
-  else if (k === ' ') { e.preventDefault(); return; }
-  else return;
-  sendSteer();
-});
-window.addEventListener('blur', () => {
-  arrows.left = arrows.right = false;
-  sendSteer();
+  if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+  const a = keyAction({ key: e.key, code: e.code, shift: e.shiftKey });
+  if (!a || a.action === 'fullscreen') return;
+  e.preventDefault(); // no page scrolling / focus moves / slider nudging / button presses
+  handleKey({ key: e.key, code: e.code, shift: e.shiftKey, repeat: e.repeat });
 });
 // Clicked buttons/checkboxes keep focus, and Space would press them again.
 document.addEventListener('click', (e) => {
   if (e.target.matches?.('button, input[type=checkbox]')) e.target.blur();
 });
 
+els.runBtn.addEventListener('click', () => runAction({ action: 'toggleRun', cap: 'Space' }));
+$('bpmDown').addEventListener('click', () => runAction({ action: 'tempo', arg: -2, cap: '[' }));
+$('bpmUp').addEventListener('click', () => runAction({ action: 'tempo', arg: 2, cap: ']' }));
+els.snapBtn.addEventListener('click', () => runAction({ action: 'snap', cap: 'S' }));
+els.outlines.checked = state.settings.outlines;
+els.outlines.addEventListener('change', () => {
+  setSetting('outlines', els.outlines.checked);
+  sendBeat();
+});
+
+function renderBeatUI() {
+  els.runBtn.textContent = engine.running ? 'Stop' : 'Start';
+  els.runBtn.classList.toggle('active', engine.running);
+  els.bpmOut.textContent = `${engine.bpm} BPM`;
+  els.snapBtn.textContent = `Snap: ${engine.snap ? 'on' : 'off'}`;
+  els.snapBtn.classList.toggle('active', engine.snap);
+}
+
 // Push everything the projector should be showing (after it (re)connects).
 function syncProjector() {
   channel.send('calib', { on: state.calibrating });
   channel.send('cross', { pt: state.proj.cross });
   channel.send('notes', { notes: state.proj.notes });
-  sendBallConfig();
+  sendBeat();
 }
 
 setInterval(() => channel.send('ping'), 1000);
@@ -176,7 +323,7 @@ $('openProjector').addEventListener('click', () => {
 });
 
 // For tests / debugging from the devtools console.
-window.stickyWall = { state, channel };
+window.stickyWall = { state, channel, engine, runAction };
 
 // ---------------------------------------------------------------- UI helpers
 
@@ -210,7 +357,7 @@ function buildSliders() {
       saveSettings(state.settings);
       if (s.key === 'rate') restartDetectionLoop();
       state.tracker?.setOptions(trackerOptions());
-      if (s.key === 'ballRadius' || s.key === 'ballSpeed') sendBallConfig();
+      if (s.group === 'Beat') applyBeatSettings();
       if (s.key === 'noteShiftX' && state.rawNotes) publishNotes(state.rawNotes);
     });
     groups.get(s.group).appendChild(row);
@@ -222,11 +369,20 @@ els.resetSettings.addEventListener('click', () => {
   saveSettings(state.settings);
   buildSliders();
   els.roiOnly.checked = state.settings.roiOnly;
+  els.outlines.checked = state.settings.outlines;
   state.tracker?.setOptions(trackerOptions());
-  sendBallConfig();
+  engine.snap = state.settings.snap;
+  applyBeatSettings();
   if (state.rawNotes) publishNotes(state.rawNotes);
   restartDetectionLoop();
 });
+
+function applyBeatSettings() {
+  const s = state.settings;
+  if (s.bpm !== engine.bpm) engine.setBpm(s.bpm, epochNow());
+  engine.setOptions({ echoBars: s.echoBars, maxBallsPerLane: s.maxBallsPerLane });
+  rebuildLanes();
+}
 
 els.roiOnly.checked = state.settings.roiOnly;
 els.roiOnly.addEventListener('change', () => {
@@ -537,48 +693,82 @@ function publishNotes(raw) {
   const notes = raw.map((n) => ({ ...n, corners: n.corners.map(([x, y]) => [x + dx, y]) }));
   state.proj.notes = notes;
   channel.send('notes', { notes });
+  rebuildLanes();
 }
 
-// Capsules (camera px) covering where each ball is, or recently was, so the
-// ball itself can never be detected as a note. The camera image lags behind
-// the projector, so the capsule reaches back along the ball's velocity.
-function ballBlockers(calib) {
+// Capsules in projector px ({ a, b, r }) covering where each ball is, or was
+// within the camera lag, so a ball can never be detected as a note. Ball
+// positions are analytic, so this uses the same formula as the projector.
+// Balls only move up and down their lane; the capsule stops above the target
+// so it never cuts into the note (see BALL_GAP).
+function ballCapsules(now = epochNow()) {
+  const { w, h } = state.proj;
   const s = state.settings;
-  const now = Date.now();
+  const rN = ballRadiusN(w, h);
+  const gN = ballGapN(w, h);
+  const R = BALL_R * refScale(w, h) * s.ballPad;
+  const clock = engine.clock();
   const out = [];
-  for (const b of state.proj.balls) {
-    const age = Math.min(0.5, Math.max(0, (now - (b.t || now)) / 1000));
-    const px = b.x + b.vx * age;
-    const py = b.y + b.vy * age;
-    const back = [px - b.vx * s.ballLag, py - b.vy * s.ballLag];
-    const ahead = [px + b.vx * 0.05, py + b.vy * 0.05];
-    const c = screenToCam(calib, [px, py]);
-    const ex = screenToCam(calib, [px + b.rx, py]);
-    const ey = screenToCam(calib, [px, py + b.ry]);
-    const r = Math.max(Math.hypot(ex[0] - c[0], ex[1] - c[1]), Math.hypot(ey[0] - c[0], ey[1] - c[1]));
-    out.push({ a: screenToCam(calib, back), b: screenToCam(calib, ahead), r: r * s.ballPad + 4 });
+  for (const lane of engine.lanes) {
+    for (const ball of engine.ballsOf(lane.id)) {
+      let lo = Infinity;
+      let hi = -Infinity;
+      const span = s.ballLag + 0.05;
+      for (let i = 0; i <= 24; i++) {
+        const y = ballY(lane, ball.phase, clockPos(clock, now - s.ballLag + (span * i) / 24), s.railBottom, rN, gN);
+        lo = Math.min(lo, y);
+        hi = Math.max(hi, y);
+      }
+      const clear = (BALL_GAP * refScale(w, h) + R) / h; // capsule end -> paper
+      lo = Math.max(lo, lane.railNoteBottom + clear);
+      if (lane.top != null) hi = Math.min(hi, lane.top - clear);
+      hi = Math.max(hi, lo);
+      out.push({ a: [lane.x * w, lo * h], b: [lane.x * w, hi * h], r: R });
+    }
   }
   return out;
 }
 
-// Is a note (projector-normalized corners) touched by any ball's mask capsule?
-// Measured in projector pixels so the ball stays round.
+// Capsules along the edges of each hit halo (note-coloured light around a note
+// would otherwise grow the note or show up as a ring-shaped note). The band
+// starts a little outside the note so it never cuts into it.
+function haloCapsules(now = epochNow()) {
+  const { w, h } = state.proj;
+  const sc = refScale(w, h);
+  const out = [];
+  const lag = state.settings.ballLag;
+  const notes = new Map(state.proj.notes.map((n) => [n.id, n]));
+  for (const halo of state.halos) {
+    const age = now - halo.at;
+    const note = notes.get(halo.noteId);
+    if (!note || age < -0.05 || age > HALO_MS / 1000 + lag) continue;
+    const [lo, hi] = HALO_MASK;
+    const pts = inflate(note.corners.map(([x, y]) => [x * w, y * h]), ((lo + hi) / 2) * sc);
+    pts.forEach((p, i) => out.push({ a: p, b: pts[(i + 1) % pts.length], r: ((hi - lo) / 2) * sc }));
+  }
+  return out;
+}
+
+// Projector-px capsules -> camera px blockers for the detector.
+function toCamBlockers(calib, capsules) {
+  const { w, h } = state.proj;
+  return capsules.map(({ a, b, r }) => {
+    const an = [a[0] / w, a[1] / h];
+    const c = screenToCam(calib, an);
+    const ex = screenToCam(calib, [an[0] + r / w, an[1]]);
+    const ey = screenToCam(calib, [an[0], an[1] + r / h]);
+    const rc = Math.max(Math.hypot(ex[0] - c[0], ex[1] - c[1]), Math.hypot(ey[0] - c[0], ey[1] - c[1]));
+    return { a: c, b: screenToCam(calib, [b[0] / w, b[1] / h]), r: rc };
+  });
+}
+
+// Is the middle of a note (tracker coords, before the shift slider) covered by
+// a ball's mask capsule? Then its detected shape is not the real outline.
 function noteOccludedByBall(corners) {
   const { w, h } = state.proj;
-  const s = state.settings;
-  const pts = corners.map(([x, y]) => [(x + s.noteShiftX) * w, y * h]);
-  const c = centroid(pts);
-  const noteR = Math.max(...pts.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
-  const now = Date.now();
-  return state.proj.balls.some((b) => {
-    const age = Math.min(0.5, Math.max(0, (now - (b.t || now)) / 1000));
-    const px = (b.x + b.vx * age) * w;
-    const py = (b.y + b.vy * age) * h;
-    const ax = px - b.vx * w * s.ballLag;
-    const ay = py - b.vy * h * s.ballLag;
-    const r = b.rx * w * s.ballPad + noteR;
-    return distToSegment(c, [ax, ay], [px, py]) < r;
-  });
+  const dx = state.settings.noteShiftX;
+  const c = centroid(corners.map(([x, y]) => [(x + dx) * w, y * h]));
+  return ballCapsules().some((cap) => distToSegment(c, cap.a, cap.b) < cap.r);
 }
 
 function distToSegment([x, y], [ax, ay], [bx, by]) {
@@ -595,7 +785,7 @@ function detectOnce() {
   if (!w || !h || els.video.readyState < 2) return;
   const calib = activeCalib();
   try {
-    state.blockers = calib ? ballBlockers(calib) : [];
+    state.blockers = calib ? toCamBlockers(calib, [...ballCapsules(), ...haloCapsules()]) : [];
     const res = state.detector.process(els.video, w, h, state.settings, {
       maskCanvas: els.mask,
       roi: calib && state.settings.roiOnly ? screenQuadInCamera(calib) : null,
@@ -742,6 +932,7 @@ function renderStatus() {
     `Projector:  ${Date.now() - state.projSeen < 3000 ? `<span class="ok">connected</span> (${state.proj.w}×${state.proj.h})` : '<span class="warn">not connected</span> - open projector.html'}`,
     `Calibrated: ${calibStatus(w, h)}`,
     `Sound:      ${soundReady() ? '<span class="ok">on</span>' : '<span class="warn">off</span> - click anywhere on this page to enable'}`,
+    `Beat:       ${engine.running ? '<span class="ok">running</span>' : 'stopped'} · ${engine.bpm} BPM · ${engine.lanes.length} lane(s)`,
     `Notes:      ${state.proj.notes.length} in play, ${state.tracker ? state.tracker.tentative().length : 0} pending, ${d ? d.notes.length : 0} detected this frame${els.freezeNotes.checked ? ' <span class="warn">(frozen)</span>' : ''}`,
   ];
   els.status.innerHTML = lines.join('\n');
@@ -816,6 +1007,7 @@ window.addEventListener('keydown', unlock);
 
 async function boot() {
   buildSliders();
+  sendBeat();
   buildColorButtons();
   requestAnimationFrame(draw);
   const id = await refreshCameraList();
