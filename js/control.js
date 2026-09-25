@@ -1,6 +1,6 @@
 import { SLIDERS, DEFAULTS, loadSettings, saveSettings, loadCalibration, saveCalibration, loadPalette, savePalette } from './settings.js';
 import { createChannel } from './channel.js';
-import { computeCalibration, camToProj, projToCam, projectionQuadInCamera, snapToDot } from './calibration.js';
+import { computeCalibration, camToProj, projToCam, snapToDot } from './calibration.js';
 import { NoteTracker, centroid } from './tracker.js';
 import { listCameras, openCamera, stopStream, SIM_DEVICE_ID } from './camera.js';
 import { SimCamera } from './simcam.js';
@@ -51,7 +51,8 @@ const state = {
   calibrating: false,
   calibPts: [], // camera px, in dot order
   projSeen: 0, // last time we heard from the projector (ms)
-  tracker: null, // NoteTracker (projector-normalized)
+  tracker: null, // NoteTracker (projector-normalized, before the shift slider)
+  rawNotes: [], // tracker output, before the shift slider
   blockers: [], // ball mask capsules used in the last detection (camera px)
   palette: loadPalette(DEFAULT_PALETTE), // { colour name: [r,g,b] as the camera sees it }
   teaching: null, // colour name waiting for a click on a note in the feed
@@ -112,7 +113,6 @@ function updateGameButtons() {
   els.gravityBtn.classList.toggle('active', state.proj.gravity);
   els.outlinesBtn.classList.toggle('active', state.proj.outlines);
   els.modeBtn.textContent = `Mode: ${state.proj.mode === 'bounce' ? 'Bounce' : 'Drop'}`;
-  els.gravityBtn.disabled = state.proj.mode === 'drop'; // drop mode always has gravity
 }
 
 const cmd = (name) => () => channel.send('cmd', { cmd: name });
@@ -211,6 +211,7 @@ function buildSliders() {
       if (s.key === 'rate') restartDetectionLoop();
       state.tracker?.setOptions(trackerOptions());
       if (s.key === 'ballRadius' || s.key === 'ballSpeed') sendBallConfig();
+      if (s.key === 'noteShiftX' && state.rawNotes) publishNotes(state.rawNotes);
     });
     groups.get(s.group).appendChild(row);
   }
@@ -223,6 +224,7 @@ els.resetSettings.addEventListener('click', () => {
   els.roiOnly.checked = state.settings.roiOnly;
   state.tracker?.setOptions(trackerOptions());
   sendBallConfig();
+  if (state.rawNotes) publishNotes(state.rawNotes);
   restartDetectionLoop();
 });
 
@@ -354,7 +356,7 @@ els.feed.addEventListener('pointermove', (ev) => {
     return;
   }
   if (els.crossTest.checked && state.calib) {
-    setCrosshair(camToProj(state.calib, p));
+    setCrosshair(camToScreen(state.calib, p));
   }
   if (state.sim && simDrag >= 0) state.sim.moveNote(simDrag, p);
 });
@@ -406,16 +408,26 @@ $('calibClear').addEventListener('click', () => { state.calibPts = []; onCalibPo
 $('forgetCalib').addEventListener('click', () => {
   state.calib = null;
   state.tracker?.reset();
+  resetShift();
   publishNotes([]);
   saveCalibration(null);
   showBanner('');
 });
+
+function resetShift() {
+  if (!state.settings.noteShiftX) return;
+  state.settings.noteShiftX = 0;
+  saveSettings(state.settings);
+  buildSliders();
+  publishNotes(state.rawNotes);
+}
 
 function onCalibPointsChanged() {
   if (state.calibPts.length === 4 && state.cv) {
     try {
       state.calib = computeCalibration(state.cv, state.calibPts, videoSize());
       saveCalibration(state.calib);
+      resetShift(); // the shift corrected the old calibration, not this one
       state.tracker?.reset();
       showBanner('');
     } catch (err) {
@@ -503,7 +515,26 @@ function activeCalib() {
   return c && c.camSize[0] === w && c.camSize[1] === h ? c : null;
 }
 
-function publishNotes(notes) {
+// Calibration maps camera <-> unshifted projector coords; the "Shift outlines"
+// slider moves everything drawn on the projector by noteShiftX. Anything
+// converting real projector positions (balls, crosshair, projector edges)
+// to/from the camera must go through these.
+function camToScreen(calib, p) {
+  const [x, y] = camToProj(calib, p);
+  return [x + state.settings.noteShiftX, y];
+}
+function screenToCam(calib, [x, y]) {
+  return projToCam(calib, [x - state.settings.noteShiftX, y]);
+}
+function screenQuadInCamera(calib) {
+  return [[0, 0], [1, 0], [1, 1], [0, 1]].map((p) => screenToCam(calib, p));
+}
+
+// Raw tracker output is kept so the shift slider can re-publish instantly.
+function publishNotes(raw) {
+  state.rawNotes = raw;
+  const dx = state.settings.noteShiftX;
+  const notes = raw.map((n) => ({ ...n, corners: n.corners.map(([x, y]) => [x + dx, y]) }));
   state.proj.notes = notes;
   channel.send('notes', { notes });
 }
@@ -521,11 +552,11 @@ function ballBlockers(calib) {
     const py = b.y + b.vy * age;
     const back = [px - b.vx * s.ballLag, py - b.vy * s.ballLag];
     const ahead = [px + b.vx * 0.05, py + b.vy * 0.05];
-    const c = projToCam(calib, [px, py]);
-    const ex = projToCam(calib, [px + b.rx, py]);
-    const ey = projToCam(calib, [px, py + b.ry]);
+    const c = screenToCam(calib, [px, py]);
+    const ex = screenToCam(calib, [px + b.rx, py]);
+    const ey = screenToCam(calib, [px, py + b.ry]);
     const r = Math.max(Math.hypot(ex[0] - c[0], ex[1] - c[1]), Math.hypot(ey[0] - c[0], ey[1] - c[1]));
-    out.push({ a: projToCam(calib, back), b: projToCam(calib, ahead), r: r * s.ballPad + 4 });
+    out.push({ a: screenToCam(calib, back), b: screenToCam(calib, ahead), r: r * s.ballPad + 4 });
   }
   return out;
 }
@@ -535,7 +566,7 @@ function ballBlockers(calib) {
 function noteOccludedByBall(corners) {
   const { w, h } = state.proj;
   const s = state.settings;
-  const pts = corners.map(([x, y]) => [x * w, y * h]);
+  const pts = corners.map(([x, y]) => [(x + s.noteShiftX) * w, y * h]);
   const c = centroid(pts);
   const noteR = Math.max(...pts.map((p) => Math.hypot(p[0] - c[0], p[1] - c[1])));
   const now = Date.now();
@@ -567,7 +598,7 @@ function detectOnce() {
     state.blockers = calib ? ballBlockers(calib) : [];
     const res = state.detector.process(els.video, w, h, state.settings, {
       maskCanvas: els.mask,
-      roi: calib && state.settings.roiOnly ? projectionQuadInCamera(calib) : null,
+      roi: calib && state.settings.roiOnly ? screenQuadInCamera(calib) : null,
       blockers: state.blockers,
     });
     state.lastDetect = res;
@@ -627,7 +658,7 @@ function drawOverlays(w, h) {
   if (state.calib && !state.calibrating) {
     ctx.setLineDash([8 * k, 6 * k]);
     ctx.strokeStyle = 'rgba(79,195,247,0.9)';
-    poly(ctx, projectionQuadInCamera(state.calib));
+    poly(ctx, screenQuadInCamera(state.calib));
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -656,7 +687,7 @@ function drawOverlays(w, h) {
     ctx.strokeStyle = '#7be35b';
     ctx.fillStyle = '#7be35b';
     ctx.font = `bold ${Math.round(14 * k)}px sans-serif`;
-    for (const n of state.proj.notes) {
+    for (const n of state.rawNotes) {
       const cam = n.corners.map((p) => projToCam(calib, p));
       poly(ctx, cam);
       ctx.stroke();

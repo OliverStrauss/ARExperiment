@@ -28,6 +28,7 @@ export const SLIDERS = [
   { key: 'matchDist', group: 'Tracking (anti-flicker)', label: 'Match distance', min: 0.01, max: 0.2, step: 0.01, def: 0.06 },
   { key: 'ballRadius', group: 'Ball', label: 'Ball size', min: 0.003, max: 0.05, step: 0.001, def: 0.012 },
   { key: 'ballSpeed', group: 'Ball', label: 'Ball speed (bounce)', min: 0.05, max: 1.5, step: 0.05, def: 0.45 },
+  { key: 'noteShiftX', group: 'Note alignment', label: 'Shift outlines left/right', min: -0.1, max: 0.1, step: 0.001, def: 0 },
   { key: 'ballPad', group: 'Ball mask', label: 'Radius multiplier', min: 1, max: 4, step: 0.1, def: 1.8 },
   { key: 'ballLag', group: 'Ball mask', label: 'Camera lag s', min: 0, max: 0.6, step: 0.05, def: 0.25 },
 ];

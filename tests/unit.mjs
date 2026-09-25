@@ -316,6 +316,26 @@ test('physics: drop mode - ball waits at the top, steers, drops, resets', async 
   assert.equal(pw.ballsNormalized()[0].held, true);
 });
 
+test('physics: zero-g drop - ball stays in its column and hits a tilted note on a steady beat', async () => {
+  const pw = await physicsWorld(1600, 900);
+  const hits = [];
+  let t = 0;
+  pw.onHit = () => hits.push(t);
+  pw.setConfig({ mode: 'drop', dropGravity: false });
+  assert.equal(pw.engine.gravity.y, 0);
+  pw.setNotes([{ id: 1, corners: [[0.4, 0.58], [0.6, 0.62], [0.6, 0.64], [0.4, 0.60]] }]); // tilted shelf
+  pw.drop(); // held ball at x = 0.5
+  for (let i = 0; i < 60 * 12; i++, t += 1000 / 60) pw.step(1000 / 60);
+  const [b] = pw.ballsNormalized();
+  close(b.x, 0.5, 1e-6, 'still in its column');
+  assert.ok(hits.length >= 4, `hits: ${hits.length}`);
+  const gaps = hits.slice(1).map((h, i) => h - hits[i]);
+  const spread = Math.max(...gaps) - Math.min(...gaps);
+  assert.ok(spread <= 1000 / 60 + 1, `steady beat (gaps ${gaps.map(Math.round)} ms)`);
+  pw.setConfig({ dropGravity: true });
+  assert.equal(pw.engine.gravity.y, 1);
+});
+
 test('physics: dropped ball lands on a note instead of falling through', async () => {
   const pw = await physicsWorld(1600, 900);
   pw.setConfig({ mode: 'drop' });

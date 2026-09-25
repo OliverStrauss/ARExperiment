@@ -2,6 +2,9 @@
 // balls. Two modes:
 //   drop   - a ball waits at the top, is steered left/right, then dropped and
 //            falls under gravity, bouncing off notes until it settles.
+//            With dropGravity off, the dropped ball is a metronome: it stays in
+//            its column and bounces straight up and down at a constant speed
+//            (note below <-> top wall), so it hits the note on a steady beat.
 //   bounce - balls fly around at a constant speed with no gravity.
 // Works in projector CSS pixels internally; notes come in and
 // balls go out in projector-normalized coordinates.
@@ -47,7 +50,7 @@ export class PhysicsWorld {
     this.walls = [];
     this.balls = [];
     this.notes = new Map(); // id -> { key, corners (normalized), body }
-    this.config = { mode: 'bounce', gravity: false, ballRadius: 0.012, ballSpeed: 0.45 };
+    this.config = { mode: 'bounce', gravity: false, dropGravity: true, ballRadius: 0.012, ballSpeed: 0.45 };
     this.steerDir = 0; // -1 left, 0, +1 right (drop mode)
     this.onHit = null; // ({ id, color, strength 0..1 }) => void, when a ball hits a note
     this._buildWalls();
@@ -260,7 +263,8 @@ export class PhysicsWorld {
     for (const b of held) {
       b.plugin.held = false;
       b.isSensor = false;
-      Body.setVelocity(b, { x: 0, y: 0 });
+      b.plugin.lockX = b.position.x;
+      Body.setVelocity(b, { x: 0, y: this.hasGravity() ? 0 : this.speedUnits() });
       const notes = [...this.notes.values()].map((n) => n.body).filter(Boolean);
       this._evict(b, notes);
     }
@@ -303,12 +307,16 @@ export class PhysicsWorld {
     }
   }
 
+  // Drop mode has its own gravity toggle (on by default); bounce uses `gravity`.
+  hasGravity() {
+    return this.config.mode === 'drop' ? this.config.dropGravity : this.config.gravity;
+  }
+
   setConfig(cfg) {
     const radiusChanged = cfg.ballRadius !== undefined && cfg.ballRadius !== this.config.ballRadius;
     const modeChanged = cfg.mode !== undefined && cfg.mode !== this.config.mode;
     Object.assign(this.config, cfg);
-    // Drop mode always has gravity; in bounce mode it's the Gravity toggle.
-    this.engine.gravity.y = this.config.mode === 'drop' || this.config.gravity ? 1 : 0;
+    this.engine.gravity.y = this.hasGravity() ? 1 : 0;
     if (modeChanged) this.resetBalls();
     else if (radiusChanged) this._replaceBalls(this._ballStates());
   }
@@ -335,7 +343,16 @@ export class PhysicsWorld {
       if (b.plugin.held) continue;
       let v = Body.getVelocity(b);
       let mag = Math.hypot(v.x, v.y);
-      if (this.config.gravity || this.config.mode === 'drop') {
+      // Zero-g drop: lock the ball to its column so tilted notes can't
+      // deflect it; only the vertical direction survives a collision.
+      if (this.config.mode === 'drop' && !this.config.dropGravity) {
+        b.plugin.lockX ??= b.position.x; // balls rebuilt on resize/toggle have none
+        if (Math.abs(b.position.x - b.plugin.lockX) > 1e-6) Body.setPosition(b, { x: b.plugin.lockX, y: b.position.y });
+        Body.setVelocity(b, { x: 0, y: (v.y < 0 ? -1 : 1) * target });
+        continue;
+      }
+      b.plugin.lockX = undefined; // re-lock at the current x if zero-g comes back
+      if (this.hasGravity()) {
         const cap = target * 2.5;
         if (mag > cap) Body.setVelocity(b, { x: (v.x / mag) * cap, y: (v.y / mag) * cap });
         continue;
