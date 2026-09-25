@@ -1,8 +1,8 @@
 // Persistent settings (localStorage). Both windows share the same origin, so
 // they also share this storage.
 
-// v2: new defaults for far-away walls / smaller ball (old v1 values are ignored)
-const KEY = 'sticky-wall.settings.v2';
+// v3: adds localChroma (lighting-tolerant detection); v2 was far-away walls / smaller ball
+const KEY = 'sticky-wall.settings.v3';
 const CALIB_KEY = 'sticky-wall.calibration.v1';
 
 // Slider schema: drives both the defaults and the generated UI in control.html.
@@ -14,6 +14,7 @@ export const SLIDERS = [
   { key: 'sMax', group: 'HSV threshold', label: 'Sat max', min: 0, max: 255, step: 1, def: 255 },
   { key: 'vMin', group: 'HSV threshold', label: 'Val min', min: 0, max: 255, step: 1, def: 70 },
   { key: 'vMax', group: 'HSV threshold', label: 'Val max', min: 0, max: 255, step: 1, def: 255 },
+  { key: 'localChroma', group: 'HSV threshold', label: 'Local chroma (0 = off, ignores Sat/Val min)', min: 0, max: 60, step: 1, def: 14 },
   { key: 'morph', group: 'Mask cleanup', label: 'Morph kernel px', min: 1, max: 21, step: 2, def: 5 },
   { key: 'procWidth', group: 'Mask cleanup', label: 'Process width px', min: 320, max: 1280, step: 160, def: 960 },
   { key: 'minArea', group: 'Note filter', label: 'Min area % of frame', min: 0.005, max: 2, step: 0.005, def: 0.02 },
