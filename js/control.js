@@ -178,8 +178,17 @@ function sendBeat() {
 }
 setInterval(sendBeat, 1000); // keep-alive
 
+// The look-ahead must cover the longest gap between ticks: this window's main
+// thread also runs detection, and a late tick would mean late notes. It grows
+// with the gaps seen (from 100 ms, capped) and relaxes slowly.
+let lastTick = 0;
+let tickSlack = 0.1;
 function schedulerTick() {
-  const hits = engine.tick(epochNow());
+  const now = epochNow();
+  if (lastTick) tickSlack = Math.min(0.35, Math.max(0.1, (now - lastTick) * 1.5, tickSlack * 0.995));
+  lastTick = now;
+  engine.setOptions({ lookahead: tickSlack });
+  const hits = engine.tick(now);
   for (const h of hits) {
     playNote(h.instrument, freqOf(h.color) ?? freqOf('purple'), h.velocity, h.time);
     channel.send('hitFx', { noteId: h.noteId, color: h.color, at: h.time });
@@ -192,6 +201,12 @@ function schedulerTick() {
   if (ring.expired(epochNow())) runAction({ action: 'ringCommit', cap: '⏱' });
 }
 setInterval(schedulerTick, 25);
+
+function sendEcho() {
+  state.proj.echo = engine.running || engine.layers.length ? engine.echoView(epochNow()) : null;
+  channel.send('echo', state.proj.echo || { rows: null });
+}
+setInterval(sendEcho, 250);
 
 function toast(key, text) {
   state.proj.toast = { key, text, at: epochNow() };
@@ -295,6 +310,23 @@ function runAction(a) {
       sendRing();
       toast(a.cap, 'Instrument unchanged');
       break;
+    case 'keep': {
+      const layer = engine.keep();
+      const n = engine.layers.length;
+      toast(a.cap, layer ? `Kept ${engine.o.echoBars} bar${engine.o.echoBars > 1 ? 's' : ''} · ${n} layer${n > 1 ? 's' : ''}` : 'Nothing to keep yet');
+      sendEcho();
+      break;
+    }
+    case 'clearLayers':
+      toast(a.cap, `Cleared ${engine.clearLayers()} layer(s)`);
+      sendEcho();
+      break;
+    case 'undoKeep': {
+      const had = engine.undoKeep();
+      toast(a.cap, had ? `Undo keep · ${engine.layers.length} left` : 'No layers to undo');
+      sendEcho();
+      break;
+    }
     case 'help':
       state.overlay = !state.overlay;
       toast(a.cap, state.overlay ? 'Keys' : 'Keys hidden');
@@ -362,6 +394,9 @@ document.addEventListener('click', (e) => {
 });
 
 els.runBtn.addEventListener('click', () => runAction({ action: 'toggleRun', cap: 'Space' }));
+$('keepBtn').addEventListener('click', () => runAction({ action: 'keep', cap: 'K' }));
+$('clearBtn').addEventListener('click', () => runAction({ action: 'clearLayers', cap: 'X' }));
+$('undoBtn').addEventListener('click', () => runAction({ action: 'undoKeep', cap: 'Z' }));
 $('bpmDown').addEventListener('click', () => runAction({ action: 'tempo', arg: -2, cap: '[' }));
 $('bpmUp').addEventListener('click', () => runAction({ action: 'tempo', arg: 2, cap: ']' }));
 els.snapBtn.addEventListener('click', () => runAction({ action: 'snap', cap: 'S' }));
@@ -371,12 +406,73 @@ els.outlines.addEventListener('change', () => {
   sendBeat();
 });
 
+// Echo panel: the wall's echo strip, larger. Kept hits solid, live outlined.
+function drawEchoPanel() {
+  const cv = $('echoCanvas');
+  const echo = state.proj.echo;
+  const rows = echo?.rows || [];
+  const ROW = 22;
+  const TOP = 8;
+  const LEFT = 56;
+  const hgt = TOP * 2 + Math.max(1, rows.length) * ROW;
+  if (cv.height !== hgt) cv.height = hgt;
+  const c = cv.getContext('2d');
+  const W = cv.width;
+  c.fillStyle = '#000';
+  c.fillRect(0, 0, W, hgt);
+  const bars = echo?.bars ?? engine.o.echoBars;
+  const steps = bars * 16;
+  const xOf = (step) => LEFT + ((step + 0.5) / steps) * (W - LEFT - 8);
+  c.fillStyle = 'rgba(255,255,255,0.05)';
+  for (let st = 0; st < steps; st += 4) c.fillRect(Math.round(xOf(st - 0.5)), TOP, 1, hgt - 2 * TOP);
+  c.fillStyle = 'rgba(255,255,255,0.2)';
+  for (let bar = 0; bar <= bars; bar++) c.fillRect(Math.round(xOf(bar * 16 - 0.5)), TOP, 1, hgt - 2 * TOP);
+  c.font = '12px ui-monospace, Menlo, monospace';
+  c.textBaseline = 'middle';
+  if (!rows.length) {
+    c.fillStyle = '#9aa0a6';
+    c.fillText(engine.running ? 'Listening… hits appear here' : 'Start the clock (Space) to hear the wall', LEFT, TOP + ROW / 2);
+  }
+  rows.forEach((row, r) => {
+    const y = TOP + r * ROW + ROW / 2;
+    const rgb = `rgb(${state.palette[row.color].join(',')})`;
+    c.fillStyle = rgb;
+    c.fillRect(6, y - 5, 10, 10);
+    c.fillStyle = '#e6e6e6';
+    c.fillText(row.pitch, 22, y);
+    c.lineWidth = 2;
+    for (const hit of row.hits) {
+      c.beginPath();
+      c.arc(xOf(hit.step), y, 6, 0, Math.PI * 2);
+      if (hit.kept) {
+        c.fillStyle = rgb;
+        c.fill();
+      } else {
+        c.strokeStyle = rgb;
+        c.stroke();
+      }
+    }
+  });
+  if (echo) {
+    const pos = clockPos(engine.clock(), epochNow());
+    const play = ((pos % steps) + steps) % steps;
+    c.fillStyle = '#fff';
+    c.fillRect(xOf(play - 0.5) - 1.5, TOP - 4, 3, hgt - 2 * TOP + 8);
+    $('echoInfo').textContent = `${engine.bpm} BPM · bar ${Math.floor(play / 16) + 1}/${bars}`;
+  } else {
+    $('echoInfo').textContent = '';
+  }
+}
+
 function renderBeatUI() {
   els.runBtn.textContent = engine.running ? 'Stop' : 'Start';
   els.runBtn.classList.toggle('active', engine.running);
   els.bpmOut.textContent = `${engine.bpm} BPM`;
   els.snapBtn.textContent = `Snap: ${engine.snap ? 'on' : 'off'}`;
   els.snapBtn.classList.toggle('active', engine.snap);
+  $('keepBtn').textContent = `Keep last ${engine.o.echoBars} bar${engine.o.echoBars > 1 ? 's' : ''} (K)`;
+  const n = engine.layers.length;
+  $('layersInfo').textContent = n ? `${n} kept layer${n > 1 ? 's' : ''} looping` : 'nothing kept';
 }
 
 // Push everything the projector should be showing (after it (re)connects).
@@ -894,6 +990,7 @@ function draw() {
     drawOverlays(w, h);
     frames++;
   }
+  drawEchoPanel();
   const now = performance.now();
   if (now - fpsT > 1000) {
     state.fps = (frames * 1000) / (now - fpsT);

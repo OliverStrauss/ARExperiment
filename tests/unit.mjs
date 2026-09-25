@@ -352,6 +352,60 @@ test('beat: ball goes rail -> target -> rail, touching the target on a hit', () 
   close(clockPos(clock, 6), 12, 1e-9, '60 bpm = 4 16ths per second');
 });
 
+// ------------------------------------------------------------------ echo + layers
+
+test('echo: hits land on the correct 1/16 step, highest pitch first', () => {
+  const e = new BeatEngine({ bpm: 120, echoBars: 4 });
+  e.setLanes([laneN(4, 1, 'green', 10), laneN(3, 2, 'red', 11)]);
+  e.start(0);
+  run(e, 0, 2); // 2 s at 120 BPM = 16 16ths
+  const v = e.echoView(2);
+  assert.equal(v.bars, 4);
+  assert.equal(v.playheadStep, 16);
+  assert.deepEqual(v.rows.map((r) => r.pitch), ['C5', 'E4']);
+  assert.deepEqual(v.rows[1].hits.map((h) => h.step), [0, 4, 8, 12, 16]);
+  assert.deepEqual(v.rows[0].hits.map((h) => h.step), [0, 3, 6, 9, 12, 15]);
+  assert.ok(v.rows.every((r) => r.hits.every((h) => !h.kept)));
+});
+
+test('echo: Keep snapshots, layers replay on the next loop, Undo pops, Clear empties', () => {
+  const e = new BeatEngine({ bpm: 120, echoBars: 1 }); // 16-step loop = 2 s
+  e.setLanes([laneN(4, 1, 'green', 10)]);
+  e.start(0);
+  run(e, 0, 2.05);
+  const layer = e.keep();
+  assert.ok(layer, 'kept');
+  assert.equal(layer.L, 16);
+  assert.deepEqual(layer.events.map((ev) => ev.step).sort((a, b) => a - b), [0, 4, 8, 12]);
+  // the wall's note goes away: only the layer plays now
+  e.setLanes([]);
+  const replay = run(e, 2.05, 4);
+  assert.ok(replay.length >= 7 && replay.every((h) => h.kept), `${replay.length} kept hits`);
+  assert.deepEqual([...new Set(replay.map((h) => ((h.pos % 16) + 16) % 16))].sort((a, b) => a - b), [0, 4, 8, 12]);
+  assert.equal(new Set(replay.map((h) => h.pos)).size, replay.length, 'each step once per loop');
+  assert.ok(e.echoView(6).rows[0].hits.every((h) => h.kept), 'echo shows kept hits');
+  e.setLanes([laneN(2, 1, 'red', 11)]);
+  run(e, 6.05, 2);
+  assert.ok(e.keep());
+  assert.equal(e.layers.length, 2);
+  e.undoKeep();
+  assert.equal(e.layers.length, 1);
+  assert.equal(e.clearLayers(), 1);
+  assert.equal(e.layers.length, 0);
+  e.setLanes([]);
+  assert.equal(run(e, 8.1, 2).length, 0, 'nothing left to play');
+});
+
+test('echo: Keep with nothing played keeps nothing; muted hits are not recorded', () => {
+  const e = new BeatEngine({ bpm: 120, echoBars: 1 });
+  e.setLanes([laneN(4, 1, 'green', 10)]);
+  assert.equal(e.keep(), null);
+  e.toggleMute('green');
+  e.start(0);
+  run(e, 0, 2);
+  assert.equal(e.keep(), null);
+});
+
 // ------------------------------------------------------------------ instrument ring
 
 test('ring: spin wraps around both ways', () => {

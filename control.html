@@ -65,6 +65,16 @@
         <div class="status">Drag notes in the camera view to move them. The projector picture is mirrored onto the fake wall.</div>
       </div>
       <div class="card" style="margin-top:14px">
+        <h2>Echo <span class="h2-info" id="echoInfo"></span></h2>
+        <canvas class="echo" id="echoCanvas" width="1000" height="60"></canvas>
+        <div class="row">
+          <button id="keepBtn" class="primary" title="Loop what the wall played in the last bars (K)">Keep last 4 bars (K)</button>
+          <button id="clearBtn" title="Remove all kept layers (X)">Clear kept (X)</button>
+          <button id="undoBtn" title="Remove the last kept layer (Z)">Undo keep (Z)</button>
+          <span class="status" id="layersInfo"></span>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px">
         <h2>Note colours <button id="resetColors" style="float:right;padding:2px 8px">Defaults</button></h2>
         <div class="row" id="colorButtons"></div>
         <div class="status" id="colorMsg"></div>

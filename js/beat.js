@@ -12,6 +12,12 @@
 //
 // Times passed in (`now`) are seconds on a clock shared by both windows:
 // epochNow() = (performance.timeOrigin + performance.now()) / 1000.
+//
+// Echo + layers: every hit the wall plays is remembered for the last echoBars
+// bars. Keep snapshots that into a layer (a loop of echoBars*16 steps) which
+// the scheduler replays forever, whether or not its notes are still up.
+
+import { NOTE_COLORS } from './colors.js';
 
 export const BEAT_DEFAULTS = {
   bpm: 96,
@@ -74,6 +80,8 @@ export class BeatEngine {
     this.instruments = new Map(); // noteId -> instrument id
     this.mutes = new Set(); // colour names
     this.solo = null; // colour name or null
+    this.echo = []; // live hits played: [{ pos, color, instrument, velocity, noteId }]
+    this.layers = []; // kept loops: [{ L, events: [{ step, color, instrument, velocity, noteId }] }]
   }
 
   setOptions(opts) {
@@ -206,7 +214,8 @@ export class BeatEngine {
   /**
    * Call every ~25 ms. Returns the hits that fall between the last call and
    * now + lookahead, each once, with its exact time:
-   *   [{ time, pos, laneId, ballId, noteId, color, instrument, velocity }]
+   *   [{ time, pos, laneId, ballId, noteId, color, instrument, velocity, kept }]
+   * Lane hits are recorded in the echo buffer; kept layers replay here too.
    */
   tick(now) {
     if (!this.running) return [];
@@ -228,11 +237,75 @@ export class BeatEngine {
             color: lane.color,
             instrument: this.instrumentOf(lane.targetId),
             velocity: this.o.velocity,
+            kept: false,
           });
         }
       }
     }
+    for (const h of hits) this.echo.push({ pos: h.pos, color: h.color, instrument: h.instrument, velocity: h.velocity, noteId: h.noteId });
+    this.layers.forEach((layer, li) => {
+      for (const ev of layer.events) {
+        if (!this.audible(ev.color)) continue;
+        for (let p = ev.step + Math.ceil((from - ev.step) / layer.L) * layer.L; p < to; p += layer.L) {
+          if (p < from) continue;
+          hits.push({ time: this.timeAt(p), pos: p, layer: li, noteId: ev.noteId, color: ev.color, instrument: ev.instrument, velocity: ev.velocity, kept: true });
+        }
+      }
+    });
     this.horizon = to;
+    const keepFrom = to - 2 * 16 * Math.max(this.o.echoBars, 1);
+    if (this.echo.length && this.echo[0].pos < keepFrom) this.echo = this.echo.filter((e) => e.pos >= keepFrom);
     return hits.sort((a, b) => a.time - b.time);
+  }
+
+  // ---------------------------------------------------------------- echo + layers
+
+  loopSteps() {
+    return 16 * this.o.echoBars;
+  }
+
+  /** Snapshot the last echoBars bars into a layer. Returns it, or null if silent. */
+  keep() {
+    const L = this.loopSteps();
+    const events = this.echo
+      .filter((e) => e.pos > this.horizon - L && e.pos <= this.horizon)
+      .map((e) => ({ step: (((e.pos % L) + L) % L), color: e.color, instrument: e.instrument, velocity: e.velocity, noteId: e.noteId }));
+    if (!events.length) return null;
+    const layer = { L, events };
+    this.layers.push(layer);
+    return layer;
+  }
+
+  undoKeep() {
+    return this.layers.pop() ?? null;
+  }
+
+  clearLayers() {
+    const n = this.layers.length;
+    this.layers = [];
+    return n;
+  }
+
+  /**
+   * 'echo' message: one row per pitch present (highest first), hits on the
+   * 1/16 grid of the loop. Live hits are from the last loop up to now.
+   */
+  echoView(now) {
+    const L = this.loopSteps();
+    const posNow = this.pos(now);
+    const play = ((posNow % L) + L) % L;
+    const grid = (p) => ((Math.round(p) % L) + L) % L;
+    const byColor = new Map();
+    const add = (color, hit) => {
+      if (!byColor.has(color)) byColor.set(color, []);
+      byColor.get(color).push(hit);
+    };
+    for (const layer of this.layers) for (const ev of layer.events) add(ev.color, { step: grid(ev.step), v: ev.velocity, kept: true });
+    for (const e of this.echo) if (e.pos > posNow - L && e.pos <= posNow) add(e.color, { step: grid(e.pos), v: e.velocity, kept: false });
+    const rows = [...NOTE_COLORS]
+      .reverse()
+      .filter((c) => byColor.has(c.name))
+      .map((c) => ({ pitch: c.pitch, color: c.name, hits: byColor.get(c.name) }));
+    return { bars: this.o.echoBars, playheadStep: Math.floor(play), rows };
   }
 }

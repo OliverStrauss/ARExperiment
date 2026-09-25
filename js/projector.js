@@ -48,7 +48,7 @@ function onMessage(msg) {
       state.beat = msg;
       break;
     case 'echo':
-      state.echo = msg;
+      state.echo = msg.rows ? msg : null;
       break;
     case 'ring':
       state.ring = msg.open ? msg : null;

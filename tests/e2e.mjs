@@ -245,6 +245,31 @@ try {
   const lastInst = await ctl.evaluate(() => window.stickyWall.state.hitLog.at(-1).instrument);
   check(lastInst === 'kick', `hits now play the kick (${lastInst})`);
 
+  console.log('echo + keep');
+  const rows = await proj.evaluate(() => window.stickyWall.state.echo?.rows?.map((r) => r.pitch) || []);
+  check(rows.includes('E4'), `echo strip on the wall shows the target's pitch (${rows.join(',')})`);
+  await proj.keyboard.press('k');
+  await sleep(300);
+  const layers = await ctl.evaluate(() => window.stickyWall.engine.layers.length);
+  check(layers === 1, `K keeps a layer (${layers})`);
+  await proj.screenshot({ path: path.join(OUT, '4-echo-projector.png') });
+  await ctl.screenshot({ path: path.join(OUT, '4-echo-control.png') });
+  // take the target off the wall: its lane goes idle but the layer keeps playing
+  await ctl.evaluate(() => {
+    const sim = window.stickyWall.state.sim;
+    sim.notes.splice(1, 1);
+    sim.dirty = true;
+  });
+  await ctl.waitForFunction(() => window.stickyWall.engine.lanes[0]?.targetId == null, null, { timeout: 10000 });
+  check(true, 'lane goes idle when its target is removed');
+  const t0 = await ctl.evaluate(() => performance.timeOrigin / 1000 + performance.now() / 1000);
+  await sleep(3000);
+  const after = await ctl.evaluate((t0) => window.stickyWall.state.hitLog.filter((h) => h.time > t0), t0);
+  check(after.length >= 6 && after.every((h) => h.kept), `the kept layer still plays (${after.length} hits, all kept)`);
+  await ctl.click('#undoBtn');
+  await sleep(200);
+  check((await ctl.evaluate(() => window.stickyWall.engine.layers.length)) === 0, 'Undo keep button removes it');
+
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(' | ')}` : ''}`);
 } finally {
   await browser.close();
